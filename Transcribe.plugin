@@ -3,7 +3,7 @@ __name__ = "Transcriber"
 __description__ = "Replaces Telegram's transcription service with free state-of-the-art alternatives."
 __author__ = "@monekgen"
 __version__ = "2.3.1f"
-__icon__ = "monekgen/84"
+__icon__ = "c/4456577457/14"
 __min_version__ = "11.12.0"
 
 
