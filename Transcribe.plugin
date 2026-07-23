@@ -235,8 +235,68 @@ def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, so
     else:
         raise RuntimeError("Original create_connection is not saved")
 
+_orig_getaddrinfo = socket.getaddrinfo
+_dns_patched = False
+
+def resolve_dns_custom(hostname, dns_ip):
+    try:
+        packet = struct.pack(">HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0)
+        for part in hostname.split("."):
+            part_bytes = part.encode('utf-8')
+            packet += struct.pack("B", len(part_bytes)) + part_bytes
+        packet += struct.pack(">HH", 0x0000, 0x0001)
+        
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(3.0)
+        sock.sendto(packet, (dns_ip, 53))
+        
+        data, _ = sock.recvfrom(512)
+        ancount = struct.unpack(">H", data[6:8])[0]
+        if ancount == 0:
+            return []
+        
+        idx = 12
+        qdcount = struct.unpack(">H", data[4:6])[0]
+        for _ in range(qdcount):
+            while data[idx] != 0:
+                idx += 1
+            idx += 5
+            
+        ips = []
+        for _ in range(ancount):
+            if (data[idx] & 0xC0) == 0xC0:
+                idx += 2
+            else:
+                while data[idx] != 0:
+                    idx += 1
+                idx += 1
+            
+            atype, aclass, ttl, rdlength = struct.unpack(">HHIH", data[idx:idx+10])
+            idx += 10
+            rdata = data[idx:idx+rdlength]
+            idx += rdlength
+            
+            if atype == 1 and rdlength == 4:
+                ips.append(socket.inet_ntoa(rdata))
+        return ips
+    except Exception:
+        return []
+
+def dns_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    global plugin_instance
+    if plugin_instance and plugin_instance.get_setting("dns_enabled", False):
+        dns_server = plugin_instance.get_setting("dns_server", "").strip()
+        if dns_server and not host.replace(".", "").isdigit() and host not in ("localhost", "127.0.0.1", "::1"):
+            ips = resolve_dns_custom(host, dns_server)
+            if ips:
+                return _orig_getaddrinfo(ips[0], port, family, type, proto, flags)
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+
 def apply_socks5_patch():
-    global _patched, _orig_create_connection
+    global _patched, _orig_create_connection, _dns_patched
+    if not _dns_patched:
+        socket.getaddrinfo = dns_getaddrinfo
+        _dns_patched = True
     if not _patched:
         try:
             import urllib3.util.connection
@@ -367,6 +427,10 @@ class LocalizationManager:  # Credits: Command List plugin by @mihailkotovski
             "proxy_port": "Port",
             "proxy_user": "Username (optional)",
             "proxy_pass": "Password (optional)",
+            "header_dns": "Custom DNS",
+            "dns_enabled": "Enable custom DNS",
+            "dns_enabled_subtext": "Resolve domains via custom DNS to bypass blockages (alternative to proxy).",
+            "dns_server": "DNS server IP",
             "settings_model_override": "Override model name",
             "settings_model_override_subtext": "Manually specify the model name to use instead of the default.",
         },
@@ -462,6 +526,10 @@ class LocalizationManager:  # Credits: Command List plugin by @mihailkotovski
             "proxy_port": "Порт",
             "proxy_user": "Имя пользователя (опционально)",
             "proxy_pass": "Пароль (опционально)",
+            "header_dns": "Кастомный DNS",
+            "dns_enabled": "Включить кастомный DNS",
+            "dns_enabled_subtext": "Разрешать домены через кастомный DNS для обхода блокировок (альтернатива прокси).",
+            "dns_server": "IP-адрес DNS-сервера",
             "settings_model_override": "Переопределить модель",
             "settings_model_override_subtext": "Вручную укажите имя модели для использования вместо стандартной.",
         },
@@ -478,7 +546,7 @@ class LocalizationManager:  # Credits: Command List plugin by @mihailkotovski
 localization = LocalizationManager()
 
 
-class TestPlugin(BasePlugin):
+class TranscribePlugin(BasePlugin):
     def on_plugin_load(self):
         global plugin_instance
         plugin_instance = self
@@ -678,7 +746,7 @@ class TestPlugin(BasePlugin):
         if not current_fragment or not current_fragment.getParentActivity():
             return
         if mc and hasattr(mc, "openByUserName"):
-            mc.openByUserName("ginqusPlugins", current_fragment, 0)
+            mc.openByUserName("monekgen", current_fragment, 0)
 
     def create_settings(self):
         model = self.get_setting("model", 0)
@@ -882,6 +950,20 @@ class TestPlugin(BasePlugin):
                 text=localization.get_string("proxy_pass"),
                 default="",
                 icon="menu_privacy",
+            ),
+            Header(text=localization.get_string("header_dns")),
+            Switch(
+                key="dns_enabled",
+                text=localization.get_string("dns_enabled"),
+                default=False,
+                subtext=localization.get_string("dns_enabled_subtext"),
+                icon="menu_network",
+            ),
+            Input(
+                key="dns_server",
+                text=localization.get_string("dns_server"),
+                default="77.220.180.180",
+                icon="msg_replace",
             ),
             Header(text=localization.get_string("header_info")),
             Text(text=localization.get_string("info_model_choice"), icon="msg_replace", on_click=self.open_model_choice_alert),
