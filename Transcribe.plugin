@@ -568,11 +568,14 @@ class TranscribePlugin(BasePlugin):
         except Exception as e:
             log(f"[TRANSCRIBER] Error adding drawer menu item: {e}")
 
-        if TranscribeButton is not None:
-            on_tap_method = TranscribeButton.getClass().getDeclaredMethod("onTap")
-            update_waveform_method = ChatMessageCell.getClass().getDeclaredMethod("updateWaveform")
-        self.hook_method(on_tap_method, self.CreateTranscribeButtonHook(self))
-        self.hook_method(update_waveform_method, self.CreateUpdateWaveformHook())
+        if TranscribeButton is not None and ChatMessageCell is not None:
+            try:
+                on_tap_method = TranscribeButton.getClass().getDeclaredMethod("onTap")
+                update_waveform_method = ChatMessageCell.getClass().getDeclaredMethod("updateWaveform")
+                self.hook_method(on_tap_method, self.CreateTranscribeButtonHook(self))
+                self.hook_method(update_waveform_method, self.CreateUpdateWaveformHook())
+            except Exception as e:
+                log(f"[TRANSCRIBER] Hooking error: {e}")
 
         return super().on_plugin_load()
 
