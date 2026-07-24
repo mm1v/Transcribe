@@ -955,9 +955,6 @@ class TranscribePlugin(BasePlugin):
             Text(text=localization.get_string("info_model_choice"), icon="msg_replace", on_click=self.open_model_choice_alert),
             Text(text=localization.get_string("info_usage"), icon="msg_help", on_click=self.open_usage_alert),
             Text(text=localization.get_string("info_pricing"), icon="menu_feature_paid", on_click=self.open_pricing_alert),
-            Header(text=localization.get_string("header_other")),
-            Text(text=localization.get_string("other_open_channel"), icon="msg_discuss", on_click=self.open_channel, accent=True),
-            # Switch(key="debugging", text=localization.get_string("other_debug_logs"), icon="msg_log", default=False),
         ])
         return settings
 
