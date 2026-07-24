@@ -68,13 +68,15 @@ def _recv_all(sock, n):
 
 def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, socket_options=None):
     global plugin_instance, _orig_create_connection
-    if plugin_instance and (plugin_instance.get_setting("proxy_enabled", False) or plugin_instance.get_setting("proxy_use_greenpass", True)):
+    if plugin_instance:
+        conn_mode = plugin_instance.get_setting("connection_mode", 0)
+        
         proxy_host = ""
         proxy_port_val = ""
         username = ""
         password = ""
         
-        if plugin_instance.get_setting("proxy_use_greenpass", True):
+        if conn_mode == 1:
             try:
                 import greenpass_proxy_api
                 if greenpass_proxy_api.is_available():
@@ -86,8 +88,7 @@ def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, so
                         password = ep.get("password", "")
             except Exception:
                 pass
-                
-        if not proxy_host:
+        elif conn_mode == 2:
             proxy_host = plugin_instance.get_setting("proxy_host", "")
             proxy_port_val = plugin_instance.get_setting("proxy_port", "")
             username = plugin_instance.get_setting("proxy_user", "")
@@ -284,7 +285,7 @@ def resolve_dns_custom(hostname, dns_ip):
 
 def dns_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     global plugin_instance
-    if plugin_instance and plugin_instance.get_setting("dns_enabled", False):
+    if plugin_instance and plugin_instance.get_setting("connection_mode", 0) == 3:
         dns_server = plugin_instance.get_setting("dns_server", "").strip()
         if dns_server and not host.replace(".", "").isdigit() and host not in ("localhost", "127.0.0.1", "::1"):
             ips = resolve_dns_custom(host, dns_server)
@@ -418,18 +419,13 @@ class LocalizationManager:  # Credits: Command List plugin by @mihailkotovski
             "bulletin_view_error": "View error",
             "bulletin_copied_to_clipboard": "Copied to clipboard",
             "bulletin_dns_recommendation": "I recommend setting up a DNS server (e.g. xbox-dns.ru or dns.malw.link)",
-            "header_proxy": "SOCKS5 proxy",
-            "proxy_use_greenpass": "Use GreenPass proxy",
-            "proxy_use_greenpass_subtext": "Automatically fetch and use proxy settings from GreenPass plugin.",
-            "proxy_enabled": "Enable proxy",
-            "proxy_enabled_subtext": "Route all transcription requests through SOCKS5 proxy.",
+            "header_connection": "Connection Mode",
+            "settings_connection_mode": "Connection mode",
+            "connection_mode_items": ["Disabled", "GreenPass Proxy", "Manual SOCKS5", "Custom DNS"],
             "proxy_host": "Host / IP",
             "proxy_port": "Port",
             "proxy_user": "Username (optional)",
             "proxy_pass": "Password (optional)",
-            "header_dns": "Custom DNS",
-            "dns_enabled": "Enable custom DNS",
-            "dns_enabled_subtext": "Resolve domains via custom DNS to bypass blockages (alternative to proxy).",
             "dns_server": "DNS server IP",
             "settings_model_override": "Override model name",
             "settings_model_override_subtext": "Manually specify the model name to use instead of the default.",
@@ -517,18 +513,13 @@ class LocalizationManager:  # Credits: Command List plugin by @mihailkotovski
             "bulletin_view_error": "Открыть",
             "bulletin_copied_to_clipboard": "Скопировано в буфер обмена",
             "bulletin_dns_recommendation": "Рекомендую поставить DNS (например, xbox-dns.ru или dns.malw.link)",
-            "header_proxy": "Прокси SOCKS5",
-            "proxy_use_greenpass": "Использовать прокси GreenPass",
-            "proxy_use_greenpass_subtext": "Автоматически получать настройки прокси из плагина GreenPass.",
-            "proxy_enabled": "Включить прокси",
-            "proxy_enabled_subtext": "Маршрутизировать запросы расшифровки через SOCKS5.",
+            "header_connection": "Режим подключения",
+            "settings_connection_mode": "Режим подключения",
+            "connection_mode_items": ["Отключено", "Прокси GreenPass", "Вручную SOCKS5", "Кастомный DNS"],
             "proxy_host": "Хост / IP",
             "proxy_port": "Порт",
             "proxy_user": "Имя пользователя (опционально)",
             "proxy_pass": "Пароль (опционально)",
-            "header_dns": "Кастомный DNS",
-            "dns_enabled": "Включить кастомный DNS",
-            "dns_enabled_subtext": "Разрешать домены через кастомный DNS для обхода блокировок (альтернатива прокси).",
             "dns_server": "IP-адрес DNS-сервера",
             "settings_model_override": "Переопределить модель",
             "settings_model_override_subtext": "Вручную укажите имя модели для использования вместо стандартной.",
@@ -911,60 +902,55 @@ class TranscribePlugin(BasePlugin):
                 ),
             ])
 
+        conn_mode = self.get_setting("connection_mode", 0)
         settings.extend([
-            Header(text=localization.get_string("header_proxy")),
-            Switch(
-                key="proxy_use_greenpass",
-                text=localization.get_string("proxy_use_greenpass"),
-                default=True,
-                subtext=localization.get_string("proxy_use_greenpass_subtext"),
-                icon="msg_link",
-            ),
-            Switch(
-                key="proxy_enabled",
-                text=localization.get_string("proxy_enabled"),
-                default=False,
-                subtext=localization.get_string("proxy_enabled_subtext"),
+            Header(text=localization.get_string("header_connection")),
+            Selector(
+                key="connection_mode",
+                text=localization.get_string("settings_connection_mode"),
+                default=0,
+                items=localization.get_string("connection_mode_items"),
                 icon="menu_network",
             ),
-            Input(
-                key="proxy_host",
-                text=localization.get_string("proxy_host"),
-                default="",
-                icon="msg_replace",
-            ),
-            Input(
-                key="proxy_port",
-                text=localization.get_string("proxy_port"),
-                default="",
-                icon="msg_message_s",
-            ),
-            Input(
-                key="proxy_user",
-                text=localization.get_string("proxy_user"),
-                default="",
-                icon="menu_unlock",
-            ),
-            Input(
-                key="proxy_pass",
-                text=localization.get_string("proxy_pass"),
-                default="",
-                icon="menu_privacy",
-            ),
-            Header(text=localization.get_string("header_dns")),
-            Switch(
-                key="dns_enabled",
-                text=localization.get_string("dns_enabled"),
-                default=False,
-                subtext=localization.get_string("dns_enabled_subtext"),
-                icon="menu_network",
-            ),
-            Input(
-                key="dns_server",
-                text=localization.get_string("dns_server"),
-                default="77.220.180.180",
-                icon="msg_replace",
-            ),
+        ])
+        
+        if conn_mode == 2:
+            settings.extend([
+                Input(
+                    key="proxy_host",
+                    text=localization.get_string("proxy_host"),
+                    default="",
+                    icon="msg_replace",
+                ),
+                Input(
+                    key="proxy_port",
+                    text=localization.get_string("proxy_port"),
+                    default="",
+                    icon="msg_message_s",
+                ),
+                Input(
+                    key="proxy_user",
+                    text=localization.get_string("proxy_user"),
+                    default="",
+                    icon="menu_unlock",
+                ),
+                Input(
+                    key="proxy_pass",
+                    text=localization.get_string("proxy_pass"),
+                    default="",
+                    icon="menu_privacy",
+                ),
+            ])
+        elif conn_mode == 3:
+            settings.extend([
+                Input(
+                    key="dns_server",
+                    text=localization.get_string("dns_server"),
+                    default="77.220.180.180",
+                    icon="msg_replace",
+                ),
+            ])
+        settings.extend([
             Header(text=localization.get_string("header_info")),
             Text(text=localization.get_string("info_model_choice"), icon="msg_replace", on_click=self.open_model_choice_alert),
             Text(text=localization.get_string("info_usage"), icon="msg_help", on_click=self.open_usage_alert),
