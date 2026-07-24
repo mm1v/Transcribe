@@ -340,6 +340,7 @@ class LocalizationManager:  # Credits: Command List plugin by @mihailkotovski
     strings = {
         "en": {
             "header_settings": "Plugin settings",
+            "settings_title": "Transcriber Settings",
             "header_warning": "Warning",
             "header_info": "Information",
             "header_other": "Other",
@@ -432,6 +433,7 @@ class LocalizationManager:  # Credits: Command List plugin by @mihailkotovski
         },
         "ru": {
             "header_settings": "Настройки плагина",
+            "settings_title": "Настройки Transcriber",
             "header_warning": "Предупреждение",
             "header_info": "Информация",
             "header_other": "Другое",
@@ -545,22 +547,17 @@ class TranscribePlugin(BasePlugin):
         TranscribeButton = find_class("org.telegram.ui.Components.TranscribeButton")
         ChatMessageCell = find_class("org.telegram.ui.Cells.ChatMessageCell")
 
-        self.add_menu_item(
-            MenuItemData(
-                menu_type=MenuItemType.MESSAGE_CONTEXT_MENU,
-                text=localization.get_string("menu_clear_transcription"),
-                on_click=self.clear_transcription,
-                icon="menu_clear_cache",
+        try:
+            self.add_menu_item(
+                MenuItemData(
+                    menu_type=MenuItemType.DRAWER_MENU,
+                    text=localization.get_string("settings_title"),
+                    icon="msg_settings",
+                    on_click=self.open_settings,
+                )
             )
-        )
-        self.add_menu_item(
-            MenuItemData(
-                menu_type=MenuItemType.MESSAGE_CONTEXT_MENU,
-                text=localization.get_string("menu_transcribe_with_different_model"),
-                on_click=self.transcribe_with_different_model,
-                icon="msg_retry",
-            )
-        )
+        except Exception as e:
+            log(f"[TRANSCRIBER] Error adding drawer menu item: {e}")
 
         if TranscribeButton is not None:
             on_tap_method = TranscribeButton.getClass().getDeclaredMethod("onTap")
@@ -1011,7 +1008,7 @@ class TranscribePlugin(BasePlugin):
 
                 self.transcribePressed(param, parent.getMessageObject(), toOpen)
 
-        def open_settings(self):
+        def open_settings(self, *args, **kwargs):
             # Credits: CactusLib plugin by @chillden4ik
             def _open_settings():
                 get_last_fragment().presentFragment(PluginSettingsActivity(PluginsController.getInstance().plugins.get(__id__)))
