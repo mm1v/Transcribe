@@ -20,7 +20,16 @@ from hook_utils import find_class, get_private_field, set_private_field
 from ui.settings import Header, Input, Text, Selector, Switch
 from android_utils import run_on_ui_thread, log
 from java.util import HashMap, Objects, Locale  # type: ignore
-from org.telegram.messenger import R as R_tg  # type: ignore
+def get_error_raw_res_id():
+    try:
+        context = get_last_fragment().getParentActivity()
+        return context.getResources().getIdentifier("error", "raw", context.getPackageName())
+    except:
+        try:
+            from org.telegram.messenger import R
+            return R.raw.error
+        except:
+            return 0
 from ui.alert import AlertDialogBuilder
 from ui.bulletin import BulletinHelper
 from typing import Dict, Any, Optional
@@ -1086,7 +1095,7 @@ class TranscribePlugin(BasePlugin):
                 run_on_ui_thread(
                     lambda: BulletinHelper.show_with_button(
                         localization.get_string("error_no_token"),
-                        R_tg.raw.error,
+                        get_error_raw_res_id(),
                         localization.get_string("bulletin_open_settings"),
                         self.open_settings,
                     )
@@ -1209,7 +1218,7 @@ class TranscribePlugin(BasePlugin):
                 run_on_ui_thread(
                     lambda: BulletinHelper.show_with_button(
                         f"{localization.get_string('error_transcribing')}: {err}",
-                        R_tg.raw.error,
+                        get_error_raw_res_id(),
                         localization.get_string("bulletin_view_error"),
                         lambda: self.view_error(err),
                     )
