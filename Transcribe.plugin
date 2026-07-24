@@ -17,9 +17,7 @@ import sys
 from client_utils import run_on_queue, get_last_fragment, get_messages_controller
 from base_plugin import BasePlugin, MethodReplacement, MethodHook, MenuItemData, MenuItemType
 from hook_utils import find_class, get_private_field, set_private_field
-from com.exteragram.messenger.plugins.ui import PluginSettingsActivity  # type: ignore
 from ui.settings import Header, Input, Text, Selector, Switch
-from com.exteragram.messenger.plugins import PluginsController  # type: ignore
 from android_utils import run_on_ui_thread, log
 from java.util import HashMap, Objects, Locale  # type: ignore
 from org.telegram.messenger import R as R_tg  # type: ignore
@@ -1011,9 +1009,11 @@ class TranscribePlugin(BasePlugin):
                 self.transcribePressed(param, parent.getMessageObject(), toOpen)
 
         def open_settings(self, *args, **kwargs):
-            # Credits: CactusLib plugin by @chillden4ik
             def _open_settings():
-                get_last_fragment().presentFragment(PluginSettingsActivity(PluginsController.getInstance().plugins.get(__id__)))
+                PluginSettingsActivity = find_class("com.exteragram.messenger.plugins.ui.PluginSettingsActivity")
+                PluginsController = find_class("com.exteragram.messenger.plugins.PluginsController")
+                if PluginSettingsActivity and PluginsController:
+                    get_last_fragment().presentFragment(PluginSettingsActivity(PluginsController.getInstance().plugins.get(__id__)))
 
             run_on_ui_thread(_open_settings)
 
