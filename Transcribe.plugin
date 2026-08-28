@@ -73,6 +73,36 @@ def _recv_all(sock, n):
         data += packet
     return data
 
+def get_requests_proxies():
+    global plugin_instance
+    if not plugin_instance:
+        return None
+    conn_mode = plugin_instance.get_setting("connection_mode", 0)
+    if conn_mode == 1:  # GreenPass
+        try:
+            import greenpass_proxy_api
+            if greenpass_proxy_api.is_available():
+                proxies = greenpass_proxy_api.requests_proxies()
+                if proxies:
+                    return proxies
+                ep = greenpass_proxy_api.endpoint()
+                if ep and ep.get("host") and ep.get("port"):
+                    auth = f"{ep['username']}:{ep['password']}@" if ep.get("username") else ""
+                    p_url = f"socks5://{auth}{ep['host']}:{ep['port']}"
+                    return {"http": p_url, "https": p_url}
+        except Exception as e:
+            log(f"[TRANSCRIBER] Error getting GreenPass proxy: {e}")
+    elif conn_mode == 2:  # Manual SOCKS5
+        host = plugin_instance.get_setting("proxy_host", "").strip()
+        port = plugin_instance.get_setting("proxy_port", "").strip()
+        user = plugin_instance.get_setting("proxy_user", "").strip()
+        pwd = plugin_instance.get_setting("proxy_pass", "").strip()
+        if host and port:
+            auth = f"{user}:{pwd}@" if user else ""
+            p_url = f"socks5://{auth}{host}:{port}"
+            return {"http": p_url, "https": p_url}
+    return None
+
 def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, socket_options=None):
     global plugin_instance, _orig_create_connection
     if plugin_instance:
@@ -96,10 +126,10 @@ def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, so
             except Exception:
                 pass
         elif conn_mode == 2:
-            proxy_host = plugin_instance.get_setting("proxy_host", "")
-            proxy_port_val = plugin_instance.get_setting("proxy_port", "")
-            username = plugin_instance.get_setting("proxy_user", "")
-            password = plugin_instance.get_setting("proxy_pass", "")
+            proxy_host = plugin_instance.get_setting("proxy_host", "").strip()
+            proxy_port_val = plugin_instance.get_setting("proxy_port", "").strip()
+            username = plugin_instance.get_setting("proxy_user", "").strip()
+            password = plugin_instance.get_setting("proxy_pass", "").strip()
             
         try:
             proxy_port = int(proxy_port_val) if proxy_port_val else 0
@@ -246,16 +276,33 @@ def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, so
 _orig_getaddrinfo = socket.getaddrinfo
 _dns_patched = False
 
-def resolve_dns_custom(hostname, dns_ip):
+def _resolve_dns_udp(hostname, dns_ip):
     try:
+        known = {
+            "xbox-dns.ru": "77.220.180.180",
+            "dns.malw.link": "77.220.180.180"
+        }
+        dns_ip = known.get(dns_ip, dns_ip).strip()
+        if not dns_ip:
+            dns_ip = "77.220.180.180"
+            
+        parts = dns_ip.split(".")
+        if not (len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)):
+            try:
+                res = _orig_getaddrinfo(dns_ip, 53, socket.AF_INET, socket.SOCK_DGRAM)
+                if res:
+                    dns_ip = res[0][4][0]
+            except Exception:
+                dns_ip = "77.220.180.180"
+
         packet = struct.pack(">HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0)
         for part in hostname.split("."):
             part_bytes = part.encode('utf-8')
             packet += struct.pack("B", len(part_bytes)) + part_bytes
-        packet += struct.pack(">HH", 0x0000, 0x0001)
+        packet += b"\x00" + struct.pack(">HH", 1, 1)
         
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(3.0)
+        sock.settimeout(2.5)
         sock.sendto(packet, (dns_ip, 53))
         
         data, _ = sock.recvfrom(512)
@@ -266,19 +313,23 @@ def resolve_dns_custom(hostname, dns_ip):
         idx = 12
         qdcount = struct.unpack(">H", data[4:6])[0]
         for _ in range(qdcount):
-            while data[idx] != 0:
+            while idx < len(data) and data[idx] != 0:
                 idx += 1
             idx += 5
             
         ips = []
         for _ in range(ancount):
+            if idx >= len(data):
+                break
             if (data[idx] & 0xC0) == 0xC0:
                 idx += 2
             else:
-                while data[idx] != 0:
+                while idx < len(data) and data[idx] != 0:
                     idx += 1
                 idx += 1
             
+            if idx + 10 > len(data):
+                break
             atype, aclass, ttl, rdlength = struct.unpack(">HHIH", data[idx:idx+10])
             idx += 10
             rdata = data[idx:idx+rdlength]
@@ -289,6 +340,28 @@ def resolve_dns_custom(hostname, dns_ip):
         return ips
     except Exception:
         return []
+
+def _resolve_dns_doh(hostname):
+    try:
+        url = f"https://dns.google/resolve?name={hostname}&type=A"
+        r = requests.get(url, timeout=3)
+        if r.status_code == 200:
+            data = r.json()
+            ips = []
+            for ans in data.get("Answer", []):
+                if ans.get("type") == 1 and ans.get("data"):
+                    ips.append(ans["data"])
+            if ips:
+                return ips
+    except Exception:
+        pass
+    return []
+
+def resolve_dns_custom(hostname, dns_server):
+    ips = _resolve_dns_udp(hostname, dns_server)
+    if ips:
+        return ips
+    return _resolve_dns_doh(hostname)
 
 def dns_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     global plugin_instance
@@ -579,6 +652,14 @@ class TranscribePlugin(BasePlugin):
 
         return super().on_plugin_load()
 
+    def get_clean_token(self, model: Optional[int] = None) -> str:
+        if model is None:
+            model = self.get_setting("model", 0)
+        keys = ["token_assemblyai", "token_deepgram", "token_mistral", "token_gemini"]
+        if 0 <= model < len(keys):
+            return str(self.get_setting(keys[model], "") or "").strip()
+        return ""
+
     def clear_transcription(self, context: Dict[str, Any]):
         messageObject = context.get("message")
 
@@ -618,16 +699,7 @@ class TranscribePlugin(BasePlugin):
             if not messageObject:
                 return
 
-            model = self.get_setting("model", 0)
-            if model == 0:
-                token = self.get_setting("token_assemblyai", "")
-            elif model == 1:
-                token = self.get_setting("token_deepgram", "")
-            elif model == 2:
-                token = self.get_setting("token_mistral", "")
-            elif model == 3:
-                token = self.get_setting("token_gemini", "")
-
+            token = self.get_clean_token(which)
             if token == "":
                 run_on_ui_thread(lambda: BulletinHelper.show_error(localization.get_string("error_no_token")))
                 return
@@ -967,6 +1039,15 @@ class TranscribePlugin(BasePlugin):
         ])
         return settings
 
+    def open_settings(self, *args, **kwargs):
+        def _open_settings():
+            PluginSettingsActivity = find_class("com.exteragram.messenger.plugins.ui.PluginSettingsActivity")
+            PluginsController = find_class("com.exteragram.messenger.plugins.PluginsController")
+            if PluginSettingsActivity and PluginsController:
+                get_last_fragment().presentFragment(PluginSettingsActivity(PluginsController.getInstance().plugins.get(__id__)))
+
+        run_on_ui_thread(_open_settings)
+
     class CreateTranscribeButtonHook(MethodReplacement):
         def __init__(self, plugin_instance):
             super().__init__()
@@ -1068,14 +1149,7 @@ class TranscribePlugin(BasePlugin):
         def transcribePressed(self, param, messageObject, open):
             self.debug_log("[TRANSCRIBER] transcribePressed() called")
             model = self.plugin.get_setting("model", 0)
-            if model == 0:
-                token = self.plugin.get_setting("token_assemblyai", "")
-            elif model == 1:
-                token = self.plugin.get_setting("token_deepgram", "")
-            elif model == 2:
-                token = self.plugin.get_setting("token_mistral", "")
-            elif model == 3:
-                token = self.plugin.get_setting("token_gemini", "")
+            token = self.plugin.get_clean_token(model)
 
             TranscribeButton = find_class("org.telegram.ui.Components.TranscribeButton")
             MessagesStorage = find_class("org.telegram.messenger.MessagesStorage")
@@ -1343,16 +1417,9 @@ class TranscribePlugin(BasePlugin):
             else:
                 model = custom_model
 
-            if model == 0:
-                token = self.plugin.get_setting("token_assemblyai", "")
-            elif model == 1:
-                token = self.plugin.get_setting("token_deepgram", "")
-            elif model == 2:
-                token = self.plugin.get_setting("token_mistral", "")
-            elif model == 3:
-                token = self.plugin.get_setting("token_gemini", "")
-
-            override = self.plugin.get_setting("model_override", "")
+            token = self.plugin.get_clean_token(model)
+            override = str(self.plugin.get_setting("model_override", "") or "").strip()
+            proxies = get_requests_proxies()
 
             try:
                 if model == 0:  # AssemblyAI
@@ -1360,7 +1427,7 @@ class TranscribePlugin(BasePlugin):
                     headers = {"authorization": token}
 
                     with open(path, "rb") as f:
-                        response = requests.post(base_url + "/v2/upload", headers=headers, data=f, timeout=60)
+                        response = requests.post(base_url + "/v2/upload", headers=headers, data=f, proxies=proxies, timeout=60)
                         if response.status_code != 200:
                             raise RuntimeError(
                                 f"{localization.get_string('error_upload_file')}: {response.status_code}, {localization.get_string('response')}:"
@@ -1371,7 +1438,7 @@ class TranscribePlugin(BasePlugin):
                     data = {"audio_url": upload_url, "language_detection": True, "speaker_labels": True}
                     if override:
                         data["speech_model"] = override
-                    response = requests.post(base_url + "/v2/transcript", headers=headers, json=data, timeout=60)
+                    response = requests.post(base_url + "/v2/transcript", headers=headers, json=data, proxies=proxies, timeout=60)
 
                     if response.status_code != 200:
                         raise RuntimeError(
@@ -1383,7 +1450,7 @@ class TranscribePlugin(BasePlugin):
                     polling_endpoint = f"{base_url}/v2/transcript/{transcript_id}"
 
                     for _ in range(60):
-                        transcript = requests.get(polling_endpoint, headers=headers).json()
+                        transcript = requests.get(polling_endpoint, headers=headers, proxies=proxies).json()
                         if transcript["status"] == "completed":
                             if self.plugin.get_setting("separate_speakers", True):
                                 result = ""
@@ -1413,7 +1480,7 @@ class TranscribePlugin(BasePlugin):
                         "Content-Type": "audio/*",
                     }
                     with open(path, "rb") as audio_file:
-                        response = requests.post(url, headers=headers, data=audio_file, timeout=60)
+                        response = requests.post(url, headers=headers, data=audio_file, proxies=proxies, timeout=60)
 
                     if response.status_code != 200:
                         raise RuntimeError(f"{response.status_code}, {localization.get_string('response')}: {response.text}")
@@ -1471,7 +1538,7 @@ class TranscribePlugin(BasePlugin):
                         "file": open(path, "rb"),
                         "model": (None, model_name),
                     }
-                    response = requests.post(url, headers=headers, files=files, timeout=60)
+                    response = requests.post(url, headers=headers, files=files, proxies=proxies, timeout=60)
 
                     if response.status_code != 200:
                         raise RuntimeError(f"{response.status_code}, {localization.get_string('response')}: {response.text}")
@@ -1500,7 +1567,7 @@ class TranscribePlugin(BasePlugin):
                         },
                     }
 
-                    response = requests.post(url, json=payload, timeout=60)
+                    response = requests.post(url, json=payload, proxies=proxies, timeout=60)
 
                     if response.status_code != 200:
                         raise RuntimeError(f"{response.status_code}, {localization.get_string('response')}: {response.text}")
