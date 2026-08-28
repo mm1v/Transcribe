@@ -354,6 +354,8 @@ def _resolve_dns_udp(hostname, dns_ip):
     except Exception:
         return []
 
+_dns_lock = threading.local()
+
 def _resolve_dns_doh(hostname):
     try:
         url = f"https://dns.google/resolve?name={hostname}&type=A"
@@ -378,12 +380,24 @@ def resolve_dns_custom(hostname, dns_server):
 
 def dns_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     global plugin_instance
+    if getattr(_dns_lock, "active", False):
+        return _orig_getaddrinfo(host, port, family, type, proto, flags)
+
     if plugin_instance and plugin_instance.get_setting("connection_mode", 0) == 3:
-        dns_server = plugin_instance.get_setting("dns_server", "").strip()
-        if dns_server and not host.replace(".", "").isdigit() and host not in ("localhost", "127.0.0.1", "::1"):
-            ips = resolve_dns_custom(host, dns_server)
-            if ips:
-                return _orig_getaddrinfo(ips[0], port, family, type, proto, flags)
+        host_str = str(host or "").strip()
+        bypass_hosts = ("localhost", "127.0.0.1", "::1", "dns.google", "cloudflare-dns.com", "one.one.one.one", "77.220.180.180", "xbox-dns.ru", "dns.malw.link")
+        if host_str and not host_str.replace(".", "").isdigit() and host_str.lower() not in bypass_hosts:
+            dns_server = plugin_instance.get_setting("dns_server", "").strip()
+            _dns_lock.active = True
+            try:
+                ips = resolve_dns_custom(host_str, dns_server)
+                if ips:
+                    return _orig_getaddrinfo(ips[0], port, family, type, proto, flags)
+            except Exception as e:
+                log(f"[TRANSCRIBER] Custom DNS resolve error: {e}")
+            finally:
+                _dns_lock.active = False
+
     return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
 def apply_socks5_patch():
@@ -1427,12 +1441,16 @@ class TranscribePlugin(BasePlugin):
             NotificationCenter = find_class("org.telegram.messenger.NotificationCenter")
 
             if this:
-                transcribeOperationsByDialogPosition = get_private_field(this, "transcribeOperationsByDialogPosition")
-                transcribeOperationsById = get_private_field(this, "transcribeOperationsById")
-                if transcribeOperationsByDialogPosition != None:
-                    transcribeOperationsByDialogPosition.remove(int(self.reqInfoHash(messageObject)))
-                if transcribeOperationsById != None:
-                    transcribeOperationsById.remove(messageId, messageObject)
+                try:
+                    transcribeOperationsByDialogPosition = get_private_field(this, "transcribeOperationsByDialogPosition")
+                    transcribeOperationsById = get_private_field(this, "transcribeOperationsById")
+                    if transcribeOperationsByDialogPosition != None:
+                        transcribeOperationsByDialogPosition.remove(int(self.reqInfoHash(messageObject)))
+                    if transcribeOperationsById != None:
+                        transcribeOperationsById.remove(int(messageId))
+                    this.setLoading(False, True)
+                except Exception as e:
+                    log(f"[TRANSCRIBER] stop_animations error: {e}")
 
             run_on_ui_thread(
                 lambda: NotificationCenter.getInstance(account).postNotificationName(
@@ -1674,12 +1692,13 @@ class TranscribePlugin(BasePlugin):
                         prompt = DEFAULT_PROMPT_DIARIZATION
                     else:
                         prompt = DEFAULT_PROMPT
+                    gen_config = {"temperature": 0}
+                    if self.plugin.get_setting("thinking_mode", False):
+                        gen_config["thinkingConfig"] = {"thinkingBudget": -1}
+
                     payload = {
                         "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mimeType": mime_type, "data": audio64}}]}],
-                        "generationConfig": {
-                            "temperature": 0,
-                            "thinkingConfig": {"thinkingBudget": -1 if self.plugin.get_setting("thinking_mode", False) else 0},
-                        },
+                        "generationConfig": gen_config,
                     }
 
                     response = requests.post(url, json=payload, proxies=proxies, timeout=60)
