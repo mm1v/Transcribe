@@ -17,10 +17,12 @@ import sys
 from client_utils import run_on_queue, get_last_fragment, get_messages_controller
 from base_plugin import BasePlugin, MethodReplacement, MethodHook, MenuItemData, MenuItemType
 from hook_utils import find_class, get_private_field, set_private_field
-from ui.settings import Header, Input, Text, Selector, Switch
 try:
-    from ui.settings import Divider, Custom
+    from ui.settings import Header, Text, Selector, Switch, EditText, Divider, Custom
+    Input = EditText
 except Exception:
+    from ui.settings import Header, Input, Text, Selector, Switch
+    EditText = Input
     Divider = None
     Custom = None
 from android_utils import run_on_ui_thread, log
@@ -937,11 +939,10 @@ class TranscribePlugin(BasePlugin):
                 items=MODELS,
                 icon="menu_feature_voice",
             ),
-            Input(
+            EditText(
                 key="model_override",
-                text=localization.get_string("settings_model_override"),
+                hint=localization.get_string("settings_model_override"),
                 default="",
-                subtext=localization.get_string("settings_model_override_subtext"),
                 icon="msg_replace",
             ),
             Switch(
@@ -979,22 +980,20 @@ class TranscribePlugin(BasePlugin):
                         subtext=localization.get_string("settings_thinking_mode_subtext"),
                         icon="msg_emoji_objects",
                     ),
-                    Input(
+                    EditText(
                         key="custom_prompt_diarization",
-                        text=localization.get_string("settings_custom_prompt"),
+                        hint=localization.get_string("settings_custom_prompt"),
                         default=DEFAULT_PROMPT_DIARIZATION,
-                        subtext=localization.get_string("settings_custom_prompt_subtext"),
                         on_change=_set_prompt_to_default_if_empty,
                         icon="msg_message_s",
                     ),
                 ])
             else:
                 settings.append(
-                    Input(
+                    EditText(
                         key="custom_prompt",
-                        text=localization.get_string("settings_custom_prompt"),
+                        hint=localization.get_string("settings_custom_prompt"),
                         default=DEFAULT_PROMPT,
-                        subtext=localization.get_string("settings_custom_prompt_subtext"),
                         on_change=_set_prompt_to_default_if_empty,
                         icon="msg_message_s",
                     )
@@ -1035,59 +1034,63 @@ class TranscribePlugin(BasePlugin):
             settings.append(Divider())
         settings.append(Header(text=localization.get_string("header_token")))
         if model == 0:
+            token_val = self.get_clean_token(0)
             settings.extend([
-                Input(
+                EditText(
                     key="token_assemblyai",
-                    text=localization.get_string("token_token"),
-                    icon="menu_privacy" if len(self.get_clean_token(0)) > 0 else "menu_unlock",
+                    hint=localization.get_string("token_token"),
+                    icon="menu_privacy" if len(token_val) > 0 else "menu_unlock",
                 ),
                 Text(
                     text=localization.get_string("token_get_token"),
                     icon="msg_openin",
                     on_click=self.open_token_page,
-                    red=len(self.get_clean_token(0)) <= 0,
+                    red=len(token_val) <= 0,
                 ),
             ])
         elif model == 1:
+            token_val = self.get_clean_token(1)
             settings.extend([
-                Input(
+                EditText(
                     key="token_deepgram",
-                    text=localization.get_string("token_token"),
-                    icon="menu_privacy" if len(self.get_clean_token(1)) > 0 else "menu_unlock",
+                    hint=localization.get_string("token_token"),
+                    icon="menu_privacy" if len(token_val) > 0 else "menu_unlock",
                 ),
                 Text(
                     text=localization.get_string("token_get_token"),
                     icon="msg_openin",
                     on_click=self.open_token_page,
-                    red=len(self.get_clean_token(1)) <= 0,
+                    red=len(token_val) <= 0,
                 ),
             ])
         elif model == 2:
+            token_val = self.get_clean_token(2)
             settings.extend([
-                Input(
+                EditText(
                     key="token_mistral",
-                    text=localization.get_string("token_token"),
-                    icon="menu_privacy" if len(self.get_clean_token(2)) > 0 else "menu_unlock",
+                    hint=localization.get_string("token_token"),
+                    icon="menu_privacy" if len(token_val) > 0 else "menu_unlock",
                 ),
                 Text(
                     text=localization.get_string("token_get_token"),
                     icon="msg_openin",
                     on_click=self.open_token_page,
-                    red=len(self.get_clean_token(2)) <= 0,
+                    red=len(token_val) <= 0,
                 ),
             ])
         elif model == 3:
+            token_val = self.get_clean_token(3)
             settings.extend([
-                Input(
+                EditText(
                     key="token_gemini",
-                    text=localization.get_string("token_token"),
-                    icon="menu_privacy" if len(self.get_clean_token(3)) > 0 else "menu_unlock",
+                    hint=localization.get_string("token_token"),
+                    icon="menu_privacy" if len(token_val) > 0 else "menu_unlock",
                 ),
                 Text(
                     text=localization.get_string("token_get_token"),
                     icon="msg_openin",
                     on_click=self.open_token_page,
-                    red=len(self.get_clean_token(3)) <= 0,
+                    red=len(token_val) <= 0,
                 ),
             ])
 
@@ -1107,36 +1110,36 @@ class TranscribePlugin(BasePlugin):
         
         if conn_mode == 2:
             settings.extend([
-                Input(
+                EditText(
                     key="proxy_host",
-                    text=localization.get_string("proxy_host"),
+                    hint=localization.get_string("proxy_host"),
                     default="",
                     icon="msg_replace",
                 ),
-                Input(
+                EditText(
                     key="proxy_port",
-                    text=localization.get_string("proxy_port"),
+                    hint=localization.get_string("proxy_port"),
                     default="",
                     icon="msg_message_s",
                 ),
-                Input(
+                EditText(
                     key="proxy_user",
-                    text=localization.get_string("proxy_user"),
+                    hint=localization.get_string("proxy_user"),
                     default="",
                     icon="menu_unlock",
                 ),
-                Input(
+                EditText(
                     key="proxy_pass",
-                    text=localization.get_string("proxy_pass"),
+                    hint=localization.get_string("proxy_pass"),
                     default="",
                     icon="menu_privacy",
                 ),
             ])
         elif conn_mode == 3:
             settings.extend([
-                Input(
+                EditText(
                     key="dns_server",
-                    text=localization.get_string("dns_server"),
+                    hint=localization.get_string("dns_server"),
                     default="77.220.180.180",
                     icon="msg_replace",
                 ),
