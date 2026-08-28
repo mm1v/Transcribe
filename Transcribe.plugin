@@ -18,8 +18,19 @@ from client_utils import run_on_queue, get_last_fragment, get_messages_controlle
 from base_plugin import BasePlugin, MethodReplacement, MethodHook, MenuItemData, MenuItemType
 from hook_utils import find_class, get_private_field, set_private_field
 from ui.settings import Header, Input, Text, Selector, Switch
+try:
+    from ui.settings import Divider, Custom
+except Exception:
+    Divider = None
+    Custom = None
 from android_utils import run_on_ui_thread, log
 from java.util import HashMap, Objects, Locale  # type: ignore
+from org.telegram.messenger import AndroidUtilities
+from org.telegram.ui.ActionBar import Theme
+from android.graphics.drawable import GradientDrawable
+from android.util import TypedValue
+from android.view import View, ViewGroup, Gravity
+from android.widget import FrameLayout, LinearLayout, TextView
 def get_error_raw_res_id():
     try:
         context = get_last_fragment().getParentActivity()
@@ -641,14 +652,25 @@ class TranscribePlugin(BasePlugin):
         except Exception as e:
             log(f"[TRANSCRIBER] Error adding drawer menu item: {e}")
 
-        if TranscribeButton is not None and ChatMessageCell is not None:
+        if TranscribeButton is not None:
             try:
-                on_tap_method = TranscribeButton.getClass().getDeclaredMethod("onTap")
-                update_waveform_method = ChatMessageCell.getClass().getDeclaredMethod("updateWaveform")
-                self.hook_method(on_tap_method, self.CreateTranscribeButtonHook(self))
-                self.hook_method(update_waveform_method, self.CreateUpdateWaveformHook())
+                if hasattr(self, "hook_all_methods"):
+                    self.hook_all_methods(TranscribeButton, "onTap", self.CreateTranscribeButtonHook(self))
+                else:
+                    on_tap_method = TranscribeButton.getClass().getDeclaredMethod("onTap")
+                    self.hook_method(on_tap_method, self.CreateTranscribeButtonHook(self))
             except Exception as e:
-                log(f"[TRANSCRIBER] Hooking error: {e}")
+                log(f"[TRANSCRIBER] Hooking onTap error: {e}")
+
+        if ChatMessageCell is not None:
+            try:
+                if hasattr(self, "hook_all_methods"):
+                    self.hook_all_methods(ChatMessageCell, "updateWaveform", self.CreateUpdateWaveformHook())
+                else:
+                    update_waveform_method = ChatMessageCell.getClass().getDeclaredMethod("updateWaveform")
+                    self.hook_method(update_waveform_method, self.CreateUpdateWaveformHook())
+            except Exception as e:
+                log(f"[TRANSCRIBER] Hooking updateWaveform error: {e}")
 
         return super().on_plugin_load()
 
@@ -820,10 +842,94 @@ class TranscribePlugin(BasePlugin):
         if mc and hasattr(mc, "openByUserName"):
             mc.openByUserName("monekgen", current_fragment, 0)
 
+    def _build_settings_hero(self):
+        try:
+            fragment = get_last_fragment()
+            context = fragment.getParentActivity() if fragment else None
+            if context is None:
+                return None
+
+            dp = AndroidUtilities.dp
+            outer = FrameLayout(context)
+            outer.setPadding(dp(12), dp(10), dp(12), dp(10))
+
+            card = LinearLayout(context)
+            card.setOrientation(LinearLayout.VERTICAL)
+            card.setPadding(dp(18), dp(18), dp(18), dp(18))
+
+            background = GradientDrawable()
+            background.setColor(Theme.getColor(Theme.key_windowBackgroundWhite))
+            background.setCornerRadius(dp(20))
+            background.setStroke(dp(1), Theme.getColor(Theme.key_divider))
+            card.setBackground(background)
+            try:
+                card.setElevation(float(dp(1)))
+            except:
+                pass
+
+            top = LinearLayout(context)
+            top.setOrientation(LinearLayout.HORIZONTAL)
+            top.setGravity(Gravity.CENTER_VERTICAL)
+
+            title = TextView(context)
+            title.setText("Transcriber")
+            title.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 22)
+            title.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
+            try:
+                title.setTypeface(AndroidUtilities.getTypeface(AndroidUtilities.TYPEFACE_ROBOTO_MEDIUM))
+            except:
+                pass
+            top.addView(title, LinearLayout.LayoutParams(0, -2, 1.0))
+
+            # Chip with active model name
+            model_idx = self.get_setting("model", 0)
+            model_names = ["AssemblyAI", "Deepgram", "Mistral", "Gemini"]
+            model_name = model_names[model_idx] if 0 <= model_idx < len(model_names) else "AI"
+            
+            mode_chip = TextView(context)
+            mode_chip.setText(model_name)
+            mode_chip.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12)
+            mode_chip.setTextColor(Theme.getColor(Theme.key_featuredStickers_buttonText))
+            mode_chip.setGravity(Gravity.CENTER)
+            mode_chip.setPadding(dp(10), dp(4), dp(10), dp(4))
+            try:
+                mode_chip.setTypeface(AndroidUtilities.getTypeface("fonts/rmedium.ttf"))
+            except:
+                pass
+            chip_bg = GradientDrawable()
+            chip_bg.setColor(Theme.getColor(Theme.key_featuredStickers_addButton))
+            chip_bg.setCornerRadius(dp(12))
+            mode_chip.setBackground(chip_bg)
+            top.addView(mode_chip, LinearLayout.LayoutParams(-2, -2))
+
+            card.addView(top, LinearLayout.LayoutParams(-1, -2))
+
+            # Subtitle
+            sub = TextView(context)
+            conn_mode = self.get_setting("connection_mode", 0)
+            conn_names = ["Прямое подключение", "Прокси GreenPass", "SOCKS5 прокси", "Кастомный DNS"]
+            conn_name = conn_names[conn_mode] if 0 <= conn_mode < len(conn_names) else ""
+            sub.setText(f"Версия 2.4.0f • {conn_name}")
+            sub.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13)
+            sub.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))
+            sub.setPadding(0, dp(8), 0, 0)
+            card.addView(sub, LinearLayout.LayoutParams(-1, -2))
+
+            outer.addView(card, FrameLayout.LayoutParams(-1, -2))
+            return Custom(view=outer) if Custom is not None else None
+        except Exception as e:
+            log(f"[TRANSCRIBER] Error building hero: {e}")
+            return None
+
     def create_settings(self):
+        hero = self._build_settings_hero()
+        settings = [hero] if hero is not None else [Header(text=localization.get_string("header_settings"))]
+
         model = self.get_setting("model", 0)
-        settings = [
-            Header(text=localization.get_string("header_settings")),
+        if Divider is not None:
+            settings.append(Divider())
+        settings.extend([
+            Header(text=localization.get_string("settings_model")),
             Selector(
                 key="model",
                 text=localization.get_string("settings_model"),
@@ -845,7 +951,7 @@ class TranscribePlugin(BasePlugin):
                 subtext=localization.get_string("settings_convert_to_audio_subtext"),
                 icon="msg_speed",
             ),
-        ]
+        ])
         if not model == 2:
             settings.append(
                 Switch(
@@ -925,19 +1031,21 @@ class TranscribePlugin(BasePlugin):
                 ),
             ])
 
+        if Divider is not None:
+            settings.append(Divider())
         settings.append(Header(text=localization.get_string("header_token")))
         if model == 0:
             settings.extend([
                 Input(
                     key="token_assemblyai",
                     text=localization.get_string("token_token"),
-                    icon="menu_privacy" if len(self.get_setting("token_assemblyai", "")) > 0 else "menu_unlock",
+                    icon="menu_privacy" if len(self.get_clean_token(0)) > 0 else "menu_unlock",
                 ),
                 Text(
                     text=localization.get_string("token_get_token"),
                     icon="msg_openin",
                     on_click=self.open_token_page,
-                    red=len(self.get_setting("token_assemblyai", "")) <= 0,
+                    red=len(self.get_clean_token(0)) <= 0,
                 ),
             ])
         elif model == 1:
@@ -945,13 +1053,13 @@ class TranscribePlugin(BasePlugin):
                 Input(
                     key="token_deepgram",
                     text=localization.get_string("token_token"),
-                    icon="menu_privacy" if len(self.get_setting("token_deepgram", "")) > 0 else "menu_unlock",
+                    icon="menu_privacy" if len(self.get_clean_token(1)) > 0 else "menu_unlock",
                 ),
                 Text(
                     text=localization.get_string("token_get_token"),
                     icon="msg_openin",
                     on_click=self.open_token_page,
-                    red=len(self.get_setting("token_deepgram", "")) <= 0,
+                    red=len(self.get_clean_token(1)) <= 0,
                 ),
             ])
         elif model == 2:
@@ -959,13 +1067,13 @@ class TranscribePlugin(BasePlugin):
                 Input(
                     key="token_mistral",
                     text=localization.get_string("token_token"),
-                    icon="menu_privacy" if len(self.get_setting("token_mistral", "")) > 0 else "menu_unlock",
+                    icon="menu_privacy" if len(self.get_clean_token(2)) > 0 else "menu_unlock",
                 ),
                 Text(
                     text=localization.get_string("token_get_token"),
                     icon="msg_openin",
                     on_click=self.open_token_page,
-                    red=len(self.get_setting("token_mistral", "")) <= 0,
+                    red=len(self.get_clean_token(2)) <= 0,
                 ),
             ])
         elif model == 3:
@@ -973,17 +1081,19 @@ class TranscribePlugin(BasePlugin):
                 Input(
                     key="token_gemini",
                     text=localization.get_string("token_token"),
-                    icon="menu_privacy" if len(self.get_setting("token_gemini", "")) > 0 else "menu_unlock",
+                    icon="menu_privacy" if len(self.get_clean_token(3)) > 0 else "menu_unlock",
                 ),
                 Text(
                     text=localization.get_string("token_get_token"),
                     icon="msg_openin",
                     on_click=self.open_token_page,
-                    red=len(self.get_setting("token_gemini", "")) <= 0,
+                    red=len(self.get_clean_token(3)) <= 0,
                 ),
             ])
 
         conn_mode = self.get_setting("connection_mode", 0)
+        if Divider is not None:
+            settings.append(Divider())
         settings.extend([
             Header(text=localization.get_string("header_connection")),
             Selector(
@@ -1031,6 +1141,8 @@ class TranscribePlugin(BasePlugin):
                     icon="msg_replace",
                 ),
             ])
+        if Divider is not None:
+            settings.append(Divider())
         settings.extend([
             Header(text=localization.get_string("header_info")),
             Text(text=localization.get_string("info_model_choice"), icon="msg_replace", on_click=self.open_model_choice_alert),
