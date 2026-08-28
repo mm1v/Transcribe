@@ -18,12 +18,10 @@ import threading
 from client_utils import run_on_queue, get_last_fragment, get_messages_controller
 from base_plugin import BasePlugin, MethodReplacement, MethodHook, MenuItemData, MenuItemType
 from hook_utils import find_class, get_private_field, set_private_field
+from ui.settings import Header, Input, Text, Selector, Switch
 try:
-    from ui.settings import Header, Text, Selector, Switch, EditText, Divider, Custom
-    Input = EditText
+    from ui.settings import Divider, Custom
 except Exception:
-    from ui.settings import Header, Input, Text, Selector, Switch
-    EditText = Input
     Divider = None
     Custom = None
 from android_utils import run_on_ui_thread, log
@@ -962,14 +960,14 @@ class TranscribePlugin(BasePlugin):
 
             if conn_mode == 2:
                 settings.extend([
-                    EditText(key="proxy_host", hint=localization.get_string("proxy_host"), default="", icon="msg_replace"),
-                    EditText(key="proxy_port", hint=localization.get_string("proxy_port"), default="", icon="msg_message_s"),
-                    EditText(key="proxy_user", hint=localization.get_string("proxy_user"), default="", icon="menu_unlock"),
-                    EditText(key="proxy_pass", hint=localization.get_string("proxy_pass"), default="", icon="menu_privacy"),
+                    Input(key="proxy_host", text=localization.get_string("proxy_host"), default="", icon="msg_replace"),
+                    Input(key="proxy_port", text=localization.get_string("proxy_port"), default="", icon="msg_message_s"),
+                    Input(key="proxy_user", text=localization.get_string("proxy_user"), default="", icon="menu_unlock"),
+                    Input(key="proxy_pass", text=localization.get_string("proxy_pass"), default="", icon="menu_privacy"),
                 ])
             elif conn_mode == 3:
                 settings.append(
-                    EditText(key="dns_server", hint=localization.get_string("dns_server"), default="77.220.180.180", icon="msg_replace")
+                    Input(key="dns_server", text=localization.get_string("dns_server"), default="77.220.180.180", icon="msg_replace")
                 )
 
             # 2. Модель и токен
@@ -994,9 +992,9 @@ class TranscribePlugin(BasePlugin):
             model_short_names = ["AssemblyAI", "Deepgram", "Mistral", "Gemini"]
             current_token = self.get_clean_token(model)
             settings.extend([
-                EditText(
+                Input(
                     key=token_keys[model],
-                    hint=f"API-токен ({model_short_names[model]})",
+                    text=f"API-токен ({model_short_names[model]})",
                     icon="menu_privacy" if len(current_token) > 0 else "menu_unlock",
                 ),
                 Text(
