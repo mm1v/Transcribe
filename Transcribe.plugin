@@ -938,192 +938,124 @@ class TranscribePlugin(BasePlugin):
             log(f"[TRANSCRIBER] Error building hero: {e}")
             return None
 
-    def _create_model_picker_subpage(self):
-        current = self.get_setting("model", 0)
-        items = [Header(text=localization.get_string("settings_model"))]
-        models_data = [
-            (0, "AssemblyAI (Universal-2)", "100 часов бесплатно • Надежное распознавание", "msg_bot"),
-            (1, "Deepgram (Nova-3)", "Высокая точность • $200 бесплатного баланса", "msg_voice"),
-            (2, "Mistral (Voxtral)", "Европейская языковая модель • Нужен зарубежный номер", "msg_send"),
-            (3, "Google Gemini (Flash)", "Бесплатно и быстро • Нужен прокси/GreenPass в РФ", "msg_sparkler"),
-        ]
-        for mode, title, desc, icon in models_data:
-            selected = (mode == current)
-            items.append(Text(
-                text=("✓ " if selected else "") + title,
-                subtext=desc,
-                icon=icon,
-                accent=selected,
-                on_click=lambda *a, target=mode: self._select_model_from_settings(target),
-            ))
-        if Divider is not None:
-            items.append(Divider())
-        items.append(Text(
-            text=localization.get_string("info_model_choice"),
-            subtext="Подробное сравнение возможностей моделей",
-            icon="msg_info",
-            on_click=self.open_model_choice_alert,
-        ))
-        return items
-
-    def _select_model_from_settings(self, model):
-        self.set_setting("model", model)
-        run_on_ui_thread(lambda: BulletinHelper.show_info(f"Выбрана модель: {MODELS[model]}"))
-        try:
-            fragment = get_last_fragment()
-            if fragment and hasattr(fragment, "rebuild"):
-                fragment.rebuild()
-        except:
-            pass
-
-    def _create_connection_picker_subpage(self):
-        current = self.get_setting("connection_mode", 0)
-        items = [Header(text=localization.get_string("header_connection"))]
-        modes_data = [
-            (0, "Прямое подключение", "Без прокси (для работы вне РФ / с системным VPN)", "menu_network"),
-            (1, "Прокси GreenPass", "Автоматическая маршрутизация через плагин GreenPass", "msg2_proxy_on"),
-            (2, "Вручную SOCKS5", "Указать собственный SOCKS5 прокси-сервер", "msg_customize"),
-            (3, "Кастомный DNS", "Переопределение DNS (обход ограничений геолокации)", "msg_replace"),
-        ]
-        for mode, title, desc, icon in modes_data:
-            selected = (mode == current)
-            items.append(Text(
-                text=("✓ " if selected else "") + title,
-                subtext=desc,
-                icon=icon,
-                accent=selected,
-                on_click=lambda *a, target=mode: self._select_conn_from_settings(target),
-            ))
-        return items
-
-    def _select_conn_from_settings(self, mode):
-        self.set_setting("connection_mode", mode)
-        conn_names = ["Прямое подключение", "Прокси GreenPass", "SOCKS5 прокси", "Кастомный DNS"]
-        run_on_ui_thread(lambda: BulletinHelper.show_info(f"Режим сети: {conn_names[mode]}"))
-        try:
-            fragment = get_last_fragment()
-            if fragment and hasattr(fragment, "rebuild"):
-                fragment.rebuild()
-        except:
-            pass
-
     def create_settings(self):
-        hero = self._build_settings_hero()
-        settings = [hero] if hero is not None else [Header(text=localization.get_string("header_settings"))]
+        try:
+            hero = self._build_settings_hero()
+            settings = [hero] if hero is not None else [Header(text=localization.get_string("header_settings"))]
 
-        model = self.get_setting("model", 0)
-        conn_mode = self.get_setting("connection_mode", 0)
+            model = self.get_setting("model", 0)
+            conn_mode = self.get_setting("connection_mode", 0)
 
-        # 1. Сеть и подключение
-        if Divider is not None:
-            settings.append(Divider())
-        settings.append(Header(text=localization.get_string("header_connection")))
-
-        conn_names = ["Прямое подключение", "Прокси GreenPass", "SOCKS5 прокси", "Кастомный DNS"]
-        conn_subtexts = [
-            "Прямые запросы к API без прокси",
-            "Маршрутизация через активный туннель GreenPass",
-            "Настроен локальный или удаленный SOCKS5",
-            "Резолв адресов через альтернативный DNS-сервер",
-        ]
-        conn_icons = ["menu_network", "msg2_proxy_on", "msg_customize", "msg_replace"]
-
-        settings.append(Text(
-            text=conn_names[conn_mode] if 0 <= conn_mode < len(conn_names) else "Сеть",
-            subtext=conn_subtexts[conn_mode] if 0 <= conn_mode < len(conn_subtexts) else "",
-            icon=conn_icons[conn_mode] if 0 <= conn_mode < len(conn_icons) else "menu_network",
-            create_sub_fragment=self._create_connection_picker_subpage,
-        ))
-
-        if conn_mode == 2:
-            settings.extend([
-                EditText(key="proxy_host", hint=localization.get_string("proxy_host"), default="", icon="msg_replace"),
-                EditText(key="proxy_port", hint=localization.get_string("proxy_port"), default="", icon="msg_message_s"),
-                EditText(key="proxy_user", hint=localization.get_string("proxy_user"), default="", icon="menu_unlock"),
-                EditText(key="proxy_pass", hint=localization.get_string("proxy_pass"), default="", icon="menu_privacy"),
-            ])
-        elif conn_mode == 3:
+            # 1. Сеть и подключение
+            if Divider is not None:
+                settings.append(Divider())
+            settings.append(Header(text=localization.get_string("header_connection")))
             settings.append(
-                EditText(key="dns_server", hint=localization.get_string("dns_server"), default="77.220.180.180", icon="msg_replace")
+                Selector(
+                    key="connection_mode",
+                    text=localization.get_string("settings_connection_mode"),
+                    default=0,
+                    items=localization.get_string("connection_mode_items"),
+                    icon="msg2_proxy_on" if conn_mode == 1 else "menu_network",
+                )
             )
 
-        # 2. Модель и Токен
-        if Divider is not None:
-            settings.append(Divider())
-        settings.append(Header(text="Модель и ключ"))
+            if conn_mode == 2:
+                settings.extend([
+                    EditText(key="proxy_host", hint=localization.get_string("proxy_host"), default="", icon="msg_replace"),
+                    EditText(key="proxy_port", hint=localization.get_string("proxy_port"), default="", icon="msg_message_s"),
+                    EditText(key="proxy_user", hint=localization.get_string("proxy_user"), default="", icon="menu_unlock"),
+                    EditText(key="proxy_pass", hint=localization.get_string("proxy_pass"), default="", icon="menu_privacy"),
+                ])
+            elif conn_mode == 3:
+                settings.append(
+                    EditText(key="dns_server", hint=localization.get_string("dns_server"), default="77.220.180.180", icon="msg_replace")
+                )
 
-        model_titles = ["AssemblyAI (Universal-2)", "Deepgram (Nova-3)", "Mistral (Voxtral)", "Google Gemini (Flash)"]
-        model_subtexts = [
-            "100 часов бесплатно • Надежное распознавание",
-            "Высокая точность • $200 бесплатного баланса",
-            "Европейская языковая модель",
-            "Бесплатно и быстро • Рекомендуется с GreenPass",
-        ]
-        model_icons = ["msg_bot", "msg_voice", "msg_send", "msg_sparkler"]
+            # 2. Модель и токен
+            if Divider is not None:
+                settings.append(Divider())
+            settings.append(Header(text=localization.get_string("settings_model")))
 
-        settings.append(Text(
-            text=model_titles[model] if 0 <= model < len(model_titles) else "Модель",
-            subtext=model_subtexts[model] if 0 <= model < len(model_subtexts) else "",
-            icon=model_icons[model] if 0 <= model < len(model_icons) else "msg_voice",
-            create_sub_fragment=self._create_model_picker_subpage,
-        ))
+            model_icons = ["msg_bot", "msg_voice", "msg_send", "msg_sparkler"]
+            current_icon = model_icons[model] if 0 <= model < len(model_icons) else "msg_voice"
 
-        token_keys = ["token_assemblyai", "token_deepgram", "token_mistral", "token_gemini"]
-        current_token = self.get_clean_token(model)
-        settings.extend([
-            EditText(
-                key=token_keys[model],
-                hint="API-токен для " + (model_titles[model].split()[0]),
-                icon="menu_privacy" if len(current_token) > 0 else "menu_unlock",
-            ),
-            Text(
-                text=localization.get_string("token_get_token"),
-                subtext="Получить бесплатный API ключ на сайте провайдера",
-                icon="msg_openin",
-                on_click=self.open_token_page,
-                red=len(current_token) <= 0,
-            ),
-        ])
+            settings.append(
+                Selector(
+                    key="model",
+                    text=localization.get_string("settings_model"),
+                    default=1,
+                    items=MODELS,
+                    icon=current_icon,
+                )
+            )
 
-        # 3. Параметры распознавания
-        if Divider is not None:
-            settings.append(Divider())
-        settings.append(Header(text="Распознавание"))
+            token_keys = ["token_assemblyai", "token_deepgram", "token_mistral", "token_gemini"]
+            model_short_names = ["AssemblyAI", "Deepgram", "Mistral", "Gemini"]
+            current_token = self.get_clean_token(model)
+            settings.extend([
+                EditText(
+                    key=token_keys[model],
+                    hint=f"API-токен ({model_short_names[model]})",
+                    icon="menu_privacy" if len(current_token) > 0 else "menu_unlock",
+                ),
+                Text(
+                    text=localization.get_string("token_get_token"),
+                    subtext="Получить бесплатный API ключ на сайте",
+                    icon="msg_openin",
+                    on_click=self.open_token_page,
+                    red=len(current_token) <= 0,
+                ),
+            ])
 
-        settings.append(Switch(
-            key="convert_to_audio",
-            text=localization.get_string("settings_convert_to_audio"),
-            default=True,
-            subtext=localization.get_string("settings_convert_to_audio_subtext"),
-            icon="msg_speed",
-        ))
+            # 3. Параметры распознавания
+            if Divider is not None:
+                settings.append(Divider())
+            settings.append(Header(text="Распознавание"))
 
-        if model != 2:
             settings.append(Switch(
-                key="separate_speakers",
-                text=localization.get_string("settings_separate_speakers"),
+                key="convert_to_audio",
+                text=localization.get_string("settings_convert_to_audio"),
                 default=True,
-                subtext=localization.get_string("settings_separate_speakers_subtext"),
-                icon="msg_groups",
+                subtext=localization.get_string("settings_convert_to_audio_subtext"),
+                icon="msg_speed",
             ))
 
-        if model == 3:
-            settings.append(Switch(
-                key="thinking_mode",
-                text=localization.get_string("settings_thinking_mode"),
-                default=False,
-                subtext=localization.get_string("settings_thinking_mode_subtext"),
-                icon="msg_emoji_objects",
-            ))
+            if model != 2:
+                settings.append(Switch(
+                    key="separate_speakers",
+                    text=localization.get_string("settings_separate_speakers"),
+                    default=True,
+                    subtext=localization.get_string("settings_separate_speakers_subtext"),
+                    icon="msg_groups",
+                ))
 
-        # 4. Прочее и справка
-        if Divider is not None:
-            settings.append(Divider())
-        settings.append(Header(text=localization.get_string("header_info")))
-        settings.extend([
-            Text(text=localization.get_string("info_usage"), subtext="Как пользоваться расшифровкой в чатах", icon="msg_help", on_click=self.open_usage_alert),
-            Text(text=localization.get_string("info_pricing"), subtext="Лимиты и бесплатные часы сервисов", icon="menu_feature_paid", on_click=self.open_pricing_alert),
-        ])
+            if model == 3:
+                settings.append(Switch(
+                    key="thinking_mode",
+                    text=localization.get_string("settings_thinking_mode"),
+                    default=False,
+                    subtext=localization.get_string("settings_thinking_mode_subtext"),
+                    icon="msg_emoji_objects",
+                ))
+
+            # 4. Справка и информация
+            if Divider is not None:
+                settings.append(Divider())
+            settings.append(Header(text=localization.get_string("header_info")))
+            settings.extend([
+                Text(text=localization.get_string("info_model_choice"), subtext="Сравнение точности и квот", icon="msg_replace", on_click=self.open_model_choice_alert),
+                Text(text=localization.get_string("info_usage"), subtext="Как пользоваться расшифровкой в чатах", icon="msg_help", on_click=self.open_usage_alert),
+                Text(text=localization.get_string("info_pricing"), subtext="Лимиты и бесплатные часы", icon="menu_feature_paid", on_click=self.open_pricing_alert),
+            ])
+
+            return settings
+        except Exception as e:
+            log(f"[TRANSCRIBER] Error creating settings: {e}")
+            return [
+                Header(text="Transcriber"),
+                Text(text="Ошибка загрузки меню: " + str(e), icon="msg_report"),
+            ]
 
         return settings
 
