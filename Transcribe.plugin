@@ -989,17 +989,15 @@ class TranscribePlugin(BasePlugin):
             )
 
             token_keys = ["token_assemblyai", "token_deepgram", "token_mistral", "token_gemini"]
-            model_short_names = ["AssemblyAI", "Deepgram", "Mistral", "Gemini"]
             current_token = self.get_clean_token(model)
             settings.extend([
                 Input(
                     key=token_keys[model],
-                    text=f"API-токен ({model_short_names[model]})",
+                    text=localization.get_string("token_token"),
                     icon="menu_privacy" if len(current_token) > 0 else "menu_unlock",
                 ),
                 Text(
                     text=localization.get_string("token_get_token"),
-                    subtext="Получить бесплатный API ключ на сайте",
                     icon="msg_openin",
                     on_click=self.open_token_page,
                     red=len(current_token) <= 0,
