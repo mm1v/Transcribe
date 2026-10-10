@@ -2,7 +2,7 @@ __id__ = "Transcribe"
 __name__ = "Transcriber"
 __description__ = "Replaces Telegram's transcription service with free state-of-the-art alternatives."
 __author__ = "@mm1vs"
-__version__ = "2.4.1"
+__version__ = "2.4.2"
 __icon__ = "monek_icons/1"
 __min_version__ = "11.12.0"
 
@@ -110,6 +110,7 @@ def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, so
                         api = None
 
                 ep = None
+                gp_plugin = getattr(api, "_plugin", None) if api else None
                 if api:
                     if hasattr(api, "endpoint"):
                         try:
@@ -117,7 +118,6 @@ def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, so
                         except:
                             ep = None
                     if not ep or not ep.get("host") or not ep.get("port"):
-                        gp_plugin = getattr(api, "_plugin", None)
                         if gp_plugin:
                             try:
                                 if hasattr(gp_plugin, "_greenpass_socks_endpoint"):
@@ -133,6 +133,8 @@ def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, so
                                 pass
 
                 if ep and ep.get("host") and ep.get("port"):
+                    if gp_plugin and hasattr(gp_plugin, "_plugin_proxy_socks_create_connection"):
+                        return gp_plugin._plugin_proxy_socks_create_connection(ep, address, timeout, source_address)
                     proxy_host = str(ep["host"])
                     proxy_port_val = str(ep["port"])
                     username = str(ep.get("username", "") or "")
@@ -148,7 +150,7 @@ def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, so
                             pass
                     raise RuntimeError(f"{err_msg}. Убедитесь, что в GreenPass подключен рабочий узел (VLESS / AmneziaWG, не TGWS).")
             except Exception as e:
-                log(f"[TRANSCRIBER] Error reading GreenPass endpoint: {e}")
+                log(f"[TRANSCRIBER] Error in GreenPass SOCKS connection: {e}")
                 raise
         elif conn_mode == 2:
             proxy_host = plugin_instance.get_setting("proxy_host", "").strip()
@@ -209,81 +211,57 @@ def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, so
                 
             try:
                 if username or password:
-                    sock.sendall(b"\x05\x02\x00\x02")
-                else:
-                    sock.sendall(b"\x05\x01\x00")
-                    
-                resp = _recv_all(sock, 2)
-                if len(resp) < 2 or resp[0] != 5:
-                    raise RuntimeError("Invalid SOCKS5 response from proxy")
-                    
-                method = resp[1]
-                if method == 0x02:
-                    user_bytes = username.encode('utf-8')
-                    pass_bytes = password.encode('utf-8')
+                    sock.sendall(b"\x05\x01\x02")
+                    reply = _recv_all(sock, 2)
+                    if reply != b"\x05\x02":
+                        raise RuntimeError("SOCKS5 auth method rejected by proxy")
+                    user_bytes = username.encode('utf-8')[:255]
+                    pass_bytes = password.encode('utf-8')[:255]
                     auth_req = b"\x01" + bytes([len(user_bytes)]) + user_bytes + bytes([len(pass_bytes)]) + pass_bytes
                     sock.sendall(auth_req)
                     
                     auth_resp = _recv_all(sock, 2)
-                    if len(auth_resp) < 2 or auth_resp[0] != 1 or auth_resp[1] != 0:
+                    if len(auth_resp) < 2 or auth_resp[1] != 0:
                         raise RuntimeError("SOCKS5 authentication failed")
-                elif method == 0x00:
-                    pass
-                elif method == 0xFF:
-                    raise RuntimeError("SOCKS5 proxy requires authentication")
                 else:
-                    raise RuntimeError(f"Unsupported SOCKS5 auth method: {method}")
+                    sock.sendall(b"\x05\x01\x00")
+                    reply = _recv_all(sock, 2)
+                    if reply != b"\x05\x00":
+                        raise RuntimeError("SOCKS5 no-auth rejected by proxy")
                     
                 try:
-                    ipv4_bytes = socket.inet_aton(host)
+                    addr_bytes = socket.inet_pton(socket.AF_INET, str(host))
                     addr_type = 1
-                    addr_bytes = ipv4_bytes
-                except socket.error:
+                except (socket.error, AttributeError):
                     try:
-                        if hasattr(socket, "inet_pton"):
-                            ipv6_bytes = socket.inet_pton(socket.AF_INET6, host)
-                            addr_type = 4
-                            addr_bytes = ipv6_bytes
-                        else:
-                            raise socket.error
-                    except socket.error:
+                        addr_bytes = socket.inet_pton(socket.AF_INET6, str(host))
+                        addr_type = 4
+                    except (socket.error, AttributeError):
                         addr_type = 3
-                        host_bytes = host.encode('utf-8')
-                        if len(host_bytes) > 255:
-                            raise ValueError(f"Hostname too long: {host}")
+                        host_bytes = str(host).encode('idna')[:255]
                         addr_bytes = bytes([len(host_bytes)]) + host_bytes
                         
-                req = b"\x05\x01\x00" + bytes([addr_type]) + addr_bytes + struct.pack("!H", port)
+                req = b"\x05\x01\x00" + bytes([addr_type]) + addr_bytes + struct.pack("!H", int(port) & 0xFFFF)
                 sock.sendall(req)
                 
                 resp = _recv_all(sock, 4)
-                if len(resp) < 4 or resp[0] != 5 or resp[1] != 0:
+                if len(resp) < 4 or resp[1] != 0:
                     status = resp[1] if len(resp) >= 2 else -1
-                    errors = {
-                        1: "general SOCKS server failure",
-                        2: "connection not allowed by ruleset",
-                        3: "Network unreachable",
-                        4: "Host unreachable",
-                        5: "Connection refused",
-                        6: "TTL expired",
-                        7: "Command not supported",
-                        8: "Address type not supported"
-                    }
-                    err_msg = errors.get(status, f"unknown error {status}")
-                    raise RuntimeError(f"SOCKS5 request failed: {err_msg}")
+                    raise RuntimeError(f"SOCKS5 request failed: status 0x{status:02x}")
                     
                 atype = resp[3]
                 if atype == 1:
-                    _recv_all(sock, 6)
+                    _recv_all(sock, 4)
                 elif atype == 3:
                     len_byte = _recv_all(sock, 1)
                     if not len_byte:
                         raise RuntimeError("SOCKS5 response truncated")
-                    _recv_all(sock, len_byte[0] + 2)
+                    _recv_all(sock, len_byte[0])
                 elif atype == 4:
-                    _recv_all(sock, 18)
+                    _recv_all(sock, 16)
                 else:
                     raise RuntimeError(f"SOCKS5 response has unknown address type: {atype}")
+                _recv_all(sock, 2)
                     
                 return sock
             except Exception as e:
@@ -455,6 +433,22 @@ def apply_socks5_patch():
                         sys.modules[pkg_name].create_connection = socks5_create_connection
                 except ImportError:
                     pass
+
+        try:
+            import urllib3.connection as urllib3_base_conn
+            if hasattr(urllib3_base_conn, "HTTPConnection"):
+                def _patched_http_new_conn(self):
+                    host = getattr(self, "_dns_host", self.host)
+                    extra_kw = {}
+                    if getattr(self, "source_address", None):
+                        extra_kw["source_address"] = self.source_address
+                    if getattr(self, "socket_options", None):
+                        extra_kw["socket_options"] = self.socket_options
+                    return socks5_create_connection((host, self.port), self.timeout, **extra_kw)
+                urllib3_base_conn.HTTPConnection._new_conn = _patched_http_new_conn
+        except Exception:
+            pass
+
         _patched = True
 
 apply_socks5_patch()
