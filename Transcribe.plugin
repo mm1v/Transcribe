@@ -2,7 +2,7 @@ __id__ = "Transcribe"
 __name__ = "Transcriber"
 __description__ = "Replaces Telegram's transcription service with free state-of-the-art alternatives."
 __author__ = "@mm1vs"
-__version__ = "2.4.3"
+__version__ = "2.4.4"
 __icon__ = "monek_icons/1"
 __min_version__ = "11.12.0"
 
@@ -75,6 +75,7 @@ Return the transcript as plain, unedited text."""
 plugin_instance = None
 _orig_create_connection = None
 _patched = False
+_socks_lock = threading.local()
 
 def _recv_all(sock, n):
     data = b""
@@ -92,6 +93,14 @@ def get_requests_proxies():
 
 def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, socket_options=None):
     global plugin_instance, _orig_create_connection
+    if getattr(_socks_lock, "active", False):
+        if _orig_create_connection:
+            try:
+                return _orig_create_connection(address, timeout, source_address, socket_options)
+            except TypeError:
+                return _orig_create_connection(address, timeout, source_address)
+        return socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
     if plugin_instance:
         conn_mode = plugin_instance.get_setting("connection_mode", 0)
         
@@ -133,10 +142,31 @@ def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, so
                                 pass
 
                 if ep and ep.get("host") and ep.get("port"):
+                    ep_host = str(ep["host"])
+                    try:
+                        ep_port = int(ep["port"])
+                    except (ValueError, TypeError):
+                        ep_port = 0
+
+                    target_host = address[0] if isinstance(address, (tuple, list)) and len(address) > 0 else ""
+                    target_port = int(address[1]) if isinstance(address, (tuple, list)) and len(address) > 1 else 0
+
+                    # Direct bypass if connecting to the proxy itself to prevent recursion deadlock
+                    if (target_host == ep_host or (target_host in ("127.0.0.1", "localhost", "::1") and ep_host in ("127.0.0.1", "localhost", "::1"))) and target_port == ep_port:
+                        if _orig_create_connection:
+                            try:
+                                return _orig_create_connection(address, timeout, source_address, socket_options)
+                            except TypeError:
+                                return _orig_create_connection(address, timeout, source_address)
+
                     if gp_plugin and hasattr(gp_plugin, "_plugin_proxy_socks_create_connection"):
-                        return gp_plugin._plugin_proxy_socks_create_connection(ep, address, timeout, source_address)
-                    proxy_host = str(ep["host"])
-                    proxy_port_val = str(ep["port"])
+                        _socks_lock.active = True
+                        try:
+                            return gp_plugin._plugin_proxy_socks_create_connection(ep, address, timeout, source_address)
+                        finally:
+                            _socks_lock.active = False
+                    proxy_host = ep_host
+                    proxy_port_val = str(ep_port)
                     username = str(ep.get("username", "") or "")
                     password = str(ep.get("password", "") or "")
                 else:
@@ -164,10 +194,11 @@ def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, so
             proxy_port = 0
             
         if proxy_host and proxy_port:
-            host, port = address[:2]
+            host = address[0] if isinstance(address, (tuple, list)) and len(address) > 0 else ""
+            port = int(address[1]) if isinstance(address, (tuple, list)) and len(address) > 1 else 0
             
             # If the request is to the proxy itself, use original connection
-            if host == proxy_host and port == proxy_port:
+            if (host == proxy_host or (host in ("127.0.0.1", "localhost", "::1") and proxy_host in ("127.0.0.1", "localhost", "::1"))) and port == proxy_port:
                 if _orig_create_connection:
                     try:
                         return _orig_create_connection(address, timeout, source_address, socket_options)
@@ -1657,14 +1688,15 @@ class TranscribePlugin(BasePlugin):
                         prompt = DEFAULT_PROMPT_DIARIZATION
                     else:
                         prompt = DEFAULT_PROMPT
-                    gen_config = {"temperature": 0}
+                    gen_config = {}
                     if self.plugin.get_setting("thinking_mode", False):
-                        gen_config["thinkingConfig"] = {"thinkingBudget": -1}
+                        gen_config["thinkingConfig"] = {"thinkingLevel": "low"}
 
                     payload = {
                         "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mimeType": mime_type, "data": audio64}}]}],
-                        "generationConfig": gen_config,
                     }
+                    if gen_config:
+                        payload["generationConfig"] = gen_config
 
                     response = requests.post(url, json=payload, proxies=proxies, timeout=60)
 
