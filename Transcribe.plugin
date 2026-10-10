@@ -108,15 +108,48 @@ def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, so
                         import greenpass_proxy_api as api
                     except Exception:
                         api = None
-                if api and hasattr(api, "is_available") and api.is_available():
-                    ep = api.endpoint()
-                    if ep:
-                        proxy_host = ep.get("host", "")
-                        proxy_port_val = str(ep.get("port", ""))
-                        username = ep.get("username", "")
-                        password = ep.get("password", "")
+
+                ep = None
+                if api:
+                    if hasattr(api, "endpoint"):
+                        try:
+                            ep = api.endpoint()
+                        except:
+                            ep = None
+                    if not ep or not ep.get("host") or not ep.get("port"):
+                        gp_plugin = getattr(api, "_plugin", None)
+                        if gp_plugin:
+                            try:
+                                if hasattr(gp_plugin, "_greenpass_socks_endpoint"):
+                                    ep = gp_plugin._greenpass_socks_endpoint()
+                                elif hasattr(gp_plugin, "_vless_port") and gp_plugin._vless_port:
+                                    ep = {
+                                        "host": "127.0.0.1",
+                                        "port": int(gp_plugin._vless_port),
+                                        "username": getattr(gp_plugin, "_vless_socks_username", ""),
+                                        "password": getattr(gp_plugin, "_vless_socks_password", "")
+                                    }
+                            except:
+                                pass
+
+                if ep and ep.get("host") and ep.get("port"):
+                    proxy_host = str(ep["host"])
+                    proxy_port_val = str(ep["port"])
+                    username = str(ep.get("username", "") or "")
+                    password = str(ep.get("password", "") or "")
+                else:
+                    err_msg = "GreenPass не готов"
+                    if api and hasattr(api, "status"):
+                        try:
+                            st = api.status()
+                            if st.get("error"):
+                                err_msg = f"GreenPass: {st['error']}"
+                        except:
+                            pass
+                    raise RuntimeError(f"{err_msg}. Убедитесь, что в GreenPass подключен рабочий узел (VLESS / AmneziaWG, не TGWS).")
             except Exception as e:
                 log(f"[TRANSCRIBER] Error reading GreenPass endpoint: {e}")
+                raise
         elif conn_mode == 2:
             proxy_host = plugin_instance.get_setting("proxy_host", "").strip()
             proxy_port_val = plugin_instance.get_setting("proxy_port", "").strip()
@@ -1594,6 +1627,11 @@ class TranscribePlugin(BasePlugin):
                     log("[TRANSCRIBER] No text found in API response")
                     raise RuntimeError("No text found in API response.")
             except Exception as e:
+                err_str = str(e)
+                if "UNEXPECTED_EOF_WHILE_READING" in err_str or "EOF occurred" in err_str:
+                    return RuntimeError("Ошибка соединения (блокировка РКН/провайдером). Включите режим «Прокси GreenPass» и подключите рабочий зарубежный узел VLESS/AmneziaWG.")
+                if "User location is not supported" in err_str:
+                    return RuntimeError("Геолокация РФ заблокирована Google. Включите режим «Прокси GreenPass» с зарубежным узлом.")
                 return e
 
     class CreateUpdateWaveformHook(MethodHook):
