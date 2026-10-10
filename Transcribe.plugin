@@ -2,7 +2,7 @@ __id__ = "Transcribe"
 __name__ = "Transcriber"
 __description__ = "Replaces Telegram's transcription service with free state-of-the-art alternatives."
 __author__ = "@mm1vs"
-__version__ = "2.4.2"
+__version__ = "2.4.3"
 __icon__ = "monek_icons/1"
 __min_version__ = "11.12.0"
 
@@ -344,6 +344,64 @@ def _resolve_dns_udp(hostname, dns_ip):
     except Exception:
         return []
 
+def _resolve_dns_dot(hostname, dns_host):
+    try:
+        known = {
+            "xbox-dns.ru": "77.220.180.180",
+            "dns.malw.link": "77.220.180.180",
+            "dns.dns-ai.ru": "dns.dns-ai.ru"
+        }
+        dns_host = known.get(dns_host, dns_host).strip()
+        if not dns_host:
+            return []
+        
+        ID = 0x1234
+        FLAGS = 0x0100
+        header = struct.pack('!HHHHHH', ID, FLAGS, 1, 0, 0, 0)
+        qname_bytes = b''.join(bytes([len(p)]) + p.encode('utf-8') for p in hostname.split('.')) + b'\x00'
+        question = qname_bytes + struct.pack('!HH', 1, 1)
+        msg = header + question
+        prefixed_msg = struct.pack('!H', len(msg)) + msg
+        
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((dns_host, 853), timeout=3.5) as raw_sock:
+            with ctx.wrap_socket(raw_sock, server_hostname=dns_host) as tls_sock:
+                tls_sock.sendall(prefixed_msg)
+                len_bytes = tls_sock.recv(2)
+                if len(len_bytes) < 2:
+                    return []
+                resp_len = struct.unpack('!H', len_bytes)[0]
+                resp = b''
+                while len(resp) < resp_len:
+                    chunk = tls_sock.recv(resp_len - len(resp))
+                    if not chunk:
+                        break
+                    resp += chunk
+                
+                ancount = struct.unpack('!H', resp[6:8])[0]
+                idx = 12 + len(question)
+                ips = []
+                for _ in range(ancount):
+                    if idx >= len(resp):
+                        break
+                    if resp[idx] & 0xC0 == 0xC0:
+                        idx += 2
+                    else:
+                        while idx < len(resp) and resp[idx] != 0:
+                            idx += 1 + resp[idx]
+                        idx += 1
+                    rtype, rclass, ttl, rdlen = struct.unpack('!HHIH', resp[idx:idx+10])
+                    idx += 10
+                    rdata = resp[idx:idx+rdlen]
+                    idx += rdlen
+                    if rtype == 1 and rdlen == 4:
+                        ips.append(socket.inet_ntoa(rdata))
+                return ips
+    except Exception:
+        return []
+
 _dns_lock = threading.local()
 
 def _resolve_dns_doh(hostname):
@@ -363,7 +421,15 @@ def _resolve_dns_doh(hostname):
     return []
 
 def resolve_dns_custom(hostname, dns_server):
-    ips = _resolve_dns_udp(hostname, dns_server)
+    dns_server_str = str(dns_server or "").strip()
+    if any(c.isalpha() for c in dns_server_str):
+        ips = _resolve_dns_dot(hostname, dns_server_str)
+        if ips:
+            return ips
+    ips = _resolve_dns_udp(hostname, dns_server_str)
+    if ips:
+        return ips
+    ips = _resolve_dns_dot(hostname, dns_server_str)
     if ips:
         return ips
     return _resolve_dns_doh(hostname)
