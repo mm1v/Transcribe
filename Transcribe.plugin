@@ -1,8 +1,8 @@
 __id__ = "Transcribe"
 __name__ = "Transcriber"
 __description__ = "Replaces Telegram's transcription service with free state-of-the-art alternatives."
-__author__ = "@monekgen"
-__version__ = "2.4.0f"
+__author__ = "@mm1vs"
+__version__ = "2.4.1"
 __icon__ = "monek_icons/1"
 __min_version__ = "11.12.0"
 
@@ -86,33 +86,8 @@ def _recv_all(sock, n):
     return data
 
 def get_requests_proxies():
-    global plugin_instance
-    if not plugin_instance:
-        return None
-    conn_mode = plugin_instance.get_setting("connection_mode", 0)
-    if conn_mode == 1:  # GreenPass
-        try:
-            import greenpass_proxy_api
-            if greenpass_proxy_api.is_available():
-                proxies = greenpass_proxy_api.requests_proxies()
-                if proxies:
-                    return proxies
-                ep = greenpass_proxy_api.endpoint()
-                if ep and ep.get("host") and ep.get("port"):
-                    auth = f"{ep['username']}:{ep['password']}@" if ep.get("username") else ""
-                    p_url = f"socks5://{auth}{ep['host']}:{ep['port']}"
-                    return {"http": p_url, "https": p_url}
-        except Exception as e:
-            log(f"[TRANSCRIBER] Error getting GreenPass proxy: {e}")
-    elif conn_mode == 2:  # Manual SOCKS5
-        host = plugin_instance.get_setting("proxy_host", "").strip()
-        port = plugin_instance.get_setting("proxy_port", "").strip()
-        user = plugin_instance.get_setting("proxy_user", "").strip()
-        pwd = plugin_instance.get_setting("proxy_pass", "").strip()
-        if host and port:
-            auth = f"{user}:{pwd}@" if user else ""
-            p_url = f"socks5://{auth}{host}:{port}"
-            return {"http": p_url, "https": p_url}
+    # SOCKS5 cannot be passed directly into requests.proxies without PySocks (which is missing on Android).
+    # All connections for GreenPass (mode 1) and SOCKS5 (mode 2) are handled natively by socks5_create_connection.
     return None
 
 def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, socket_options=None):
@@ -127,16 +102,21 @@ def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, so
         
         if conn_mode == 1:
             try:
-                import greenpass_proxy_api
-                if greenpass_proxy_api.is_available():
-                    ep = greenpass_proxy_api.endpoint()
+                api = sys.modules.get("greenpass_proxy_api")
+                if api is None:
+                    try:
+                        import greenpass_proxy_api as api
+                    except Exception:
+                        api = None
+                if api and hasattr(api, "is_available") and api.is_available():
+                    ep = api.endpoint()
                     if ep:
                         proxy_host = ep.get("host", "")
                         proxy_port_val = str(ep.get("port", ""))
                         username = ep.get("username", "")
                         password = ep.get("password", "")
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"[TRANSCRIBER] Error reading GreenPass endpoint: {e}")
         elif conn_mode == 2:
             proxy_host = plugin_instance.get_setting("proxy_host", "").strip()
             proxy_port_val = plugin_instance.get_setting("proxy_port", "").strip()
@@ -418,7 +398,9 @@ def apply_socks5_patch():
         if not _orig_create_connection:
             _orig_create_connection = socket.create_connection
 
-        packages_to_patch = ["urllib3.util.connection", "urllib3.connection"]
+        socket.create_connection = socks5_create_connection
+
+        packages_to_patch = ["urllib3.util.connection", "urllib3.connection", "urllib3.util"]
         try:
             import requests.packages.urllib3.util.connection
             packages_to_patch.append("requests.packages.urllib3.util.connection")
@@ -436,10 +418,13 @@ def apply_socks5_patch():
             else:
                 try:
                     __import__(pkg_name)
-                    sys.modules[pkg_name].create_connection = socks5_create_connection
+                    if pkg_name in sys.modules:
+                        sys.modules[pkg_name].create_connection = socks5_create_connection
                 except ImportError:
                     pass
         _patched = True
+
+apply_socks5_patch()
 
 
 class LocalizationManager:  # Credits: Command List plugin by @mihailkotovski
@@ -855,7 +840,7 @@ class TranscribePlugin(BasePlugin):
         if not current_fragment or not current_fragment.getParentActivity():
             return
         if mc and hasattr(mc, "openByUserName"):
-            mc.openByUserName("monekgen", current_fragment, 0)
+            mc.openByUserName("mm1vs", current_fragment, 0)
 
     def _build_settings_hero(self):
         try:
