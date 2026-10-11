@@ -2,7 +2,7 @@ __id__ = "Transcribe"
 __name__ = "Transcriber"
 __description__ = "Replaces Telegram's transcription service with free state-of-the-art alternatives."
 __author__ = "@mm1vs"
-__version__ = "2.4.4"
+__version__ = "2.4.7"
 __icon__ = "monek_icons/1"
 __min_version__ = "11.12.0"
 
@@ -12,6 +12,7 @@ import requests
 import base64
 import time
 import socket
+import ssl
 import struct
 import sys
 import threading
@@ -73,9 +74,10 @@ Return the transcript as plain, unedited text."""
 
 
 plugin_instance = None
-_orig_create_connection = None
 _patched = False
 _socks_lock = threading.local()
+DEFAULT_CONNECTION_MODE = 3
+DEFAULT_DNS_SERVER = "dns.dns-ai.ru"
 
 def _recv_all(sock, n):
     data = b""
@@ -86,23 +88,53 @@ def _recv_all(sock, n):
         data += packet
     return data
 
+def _create_direct_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, socket_options=None):
+    """Open a TCP socket without calling socket/urllib3 create_connection hooks.
+
+    GreenPass and this plugin both patch those helpers. Using either patched
+    helper as the recursion escape hatch can send the connection straight back
+    through the other plugin. Keep DNS lookup (including our custom DNS hook),
+    but perform the actual connect with socket.socket directly.
+    """
+    host, port = address[:2]
+    last_error = None
+    for family, socktype, proto, _canonname, sockaddr in socket.getaddrinfo(
+        host, port, 0, socket.SOCK_STREAM
+    ):
+        sock = None
+        try:
+            sock = socket.socket(family, socktype, proto)
+            for option in socket_options or ():
+                sock.setsockopt(*option)
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as exc:
+            last_error = exc
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+    if last_error is not None:
+        raise last_error
+    raise OSError("getaddrinfo returned no addresses for %r" % (address,))
+
 def get_requests_proxies():
     # SOCKS5 cannot be passed directly into requests.proxies without PySocks (which is missing on Android).
     # All connections for GreenPass (mode 1) and SOCKS5 (mode 2) are handled natively by socks5_create_connection.
     return None
 
 def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, socket_options=None):
-    global plugin_instance, _orig_create_connection
+    global plugin_instance
     if getattr(_socks_lock, "active", False):
-        if _orig_create_connection:
-            try:
-                return _orig_create_connection(address, timeout, source_address, socket_options)
-            except TypeError:
-                return _orig_create_connection(address, timeout, source_address)
-        return socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        return _create_direct_connection(address, timeout, source_address, socket_options)
 
     if plugin_instance:
-        conn_mode = plugin_instance.get_setting("connection_mode", 0)
+        conn_mode = plugin_instance.get_setting("connection_mode", DEFAULT_CONNECTION_MODE)
         
         proxy_host = ""
         proxy_port_val = ""
@@ -153,16 +185,15 @@ def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, so
 
                     # Direct bypass if connecting to the proxy itself to prevent recursion deadlock
                     if (target_host == ep_host or (target_host in ("127.0.0.1", "localhost", "::1") and ep_host in ("127.0.0.1", "localhost", "::1"))) and target_port == ep_port:
-                        if _orig_create_connection:
-                            try:
-                                return _orig_create_connection(address, timeout, source_address, socket_options)
-                            except TypeError:
-                                return _orig_create_connection(address, timeout, source_address)
+                        return _create_direct_connection(address, timeout, source_address, socket_options)
 
                     if gp_plugin and hasattr(gp_plugin, "_plugin_proxy_socks_create_connection"):
                         _socks_lock.active = True
                         try:
-                            return gp_plugin._plugin_proxy_socks_create_connection(ep, address, timeout, source_address)
+                            sock = gp_plugin._plugin_proxy_socks_create_connection(ep, address, timeout, source_address)
+                            for option in socket_options or ():
+                                sock.setsockopt(*option)
+                            return sock
                         finally:
                             _socks_lock.active = False
                     proxy_host = ep_host
@@ -199,13 +230,7 @@ def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, so
             
             # If the request is to the proxy itself, use original connection
             if (host == proxy_host or (host in ("127.0.0.1", "localhost", "::1") and proxy_host in ("127.0.0.1", "localhost", "::1"))) and port == proxy_port:
-                if _orig_create_connection:
-                    try:
-                        return _orig_create_connection(address, timeout, source_address, socket_options)
-                    except TypeError:
-                        return _orig_create_connection(address, timeout, source_address)
-                else:
-                    raise RuntimeError("Original create_connection is not saved")
+                return _create_direct_connection(address, timeout, source_address, socket_options)
                 
             try:
                 addrs = socket.getaddrinfo(proxy_host, proxy_port, socket.AF_UNSPEC, socket.SOCK_STREAM)
@@ -299,13 +324,7 @@ def socks5_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, so
                 sock.close()
                 raise socket.error(f"SOCKS5 proxy connection failed: {e}")
                 
-    if _orig_create_connection:
-        try:
-            return _orig_create_connection(address, timeout, source_address, socket_options)
-        except TypeError:
-            return _orig_create_connection(address, timeout, source_address)
-    else:
-        raise RuntimeError("Original create_connection is not saved")
+    return _create_direct_connection(address, timeout, source_address, socket_options)
 
 _orig_getaddrinfo = socket.getaddrinfo
 _dns_patched = False
@@ -314,9 +333,10 @@ def _resolve_dns_udp(hostname, dns_ip):
     try:
         known = {
             "xbox-dns.ru": "77.220.180.180",
-            "dns.malw.link": "77.220.180.180"
+            "dns.malw.link": "77.220.180.180",
+            "dns.dns-ai.ru": "192.144.59.14",
         }
-        dns_ip = known.get(dns_ip, dns_ip).strip()
+        dns_ip = known.get(dns_ip.lower(), dns_ip).strip()
         if not dns_ip:
             dns_ip = "77.220.180.180"
             
@@ -376,62 +396,115 @@ def _resolve_dns_udp(hostname, dns_ip):
         return []
 
 def _resolve_dns_dot(hostname, dns_host):
+    server_name = str(dns_host or "").strip()
+    if not server_name:
+        return []
+
+    # DNS-AI intentionally does not listen on plaintext DNS/53. Bootstrap its
+    # encrypted resolver using the published IPs, but keep the hostname for
+    # SNI and certificate validation.
+    known = {
+        "xbox-dns.ru": ("77.220.180.180",),
+        "dns.malw.link": ("77.220.180.180",),
+        "dns.dns-ai.ru": ("192.144.59.14", "186.246.49.127"),
+    }
+    addresses = known.get(server_name.lower())
+    if addresses is None:
+        try:
+            socket.inet_pton(socket.AF_INET, server_name)
+            addresses = (server_name,)
+        except OSError:
+            try:
+                addresses = tuple(
+                    dict.fromkeys(
+                        result[4][0]
+                        for result in _orig_getaddrinfo(
+                            server_name, 853, socket.AF_INET, socket.SOCK_STREAM
+                        )
+                    )
+                )
+            except Exception:
+                return []
+
     try:
-        known = {
-            "xbox-dns.ru": "77.220.180.180",
-            "dns.malw.link": "77.220.180.180",
-            "dns.dns-ai.ru": "dns.dns-ai.ru"
-        }
-        dns_host = known.get(dns_host, dns_host).strip()
-        if not dns_host:
-            return []
-        
-        ID = 0x1234
-        FLAGS = 0x0100
-        header = struct.pack('!HHHHHH', ID, FLAGS, 1, 0, 0, 0)
-        qname_bytes = b''.join(bytes([len(p)]) + p.encode('utf-8') for p in hostname.split('.')) + b'\x00'
-        question = qname_bytes + struct.pack('!HH', 1, 1)
-        msg = header + question
-        prefixed_msg = struct.pack('!H', len(msg)) + msg
-        
+        ctx = ssl.create_default_context(cafile=requests.certs.where())
+    except Exception:
         ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((dns_host, 853), timeout=3.5) as raw_sock:
-            with ctx.wrap_socket(raw_sock, server_hostname=dns_host) as tls_sock:
-                tls_sock.sendall(prefixed_msg)
-                len_bytes = tls_sock.recv(2)
-                if len(len_bytes) < 2:
-                    return []
-                resp_len = struct.unpack('!H', len_bytes)[0]
-                resp = b''
-                while len(resp) < resp_len:
-                    chunk = tls_sock.recv(resp_len - len(resp))
-                    if not chunk:
-                        break
-                    resp += chunk
-                
-                ancount = struct.unpack('!H', resp[6:8])[0]
-                idx = 12 + len(question)
-                ips = []
-                for _ in range(ancount):
-                    if idx >= len(resp):
-                        break
-                    if resp[idx] & 0xC0 == 0xC0:
-                        idx += 2
-                    else:
-                        while idx < len(resp) and resp[idx] != 0:
-                            idx += 1 + resp[idx]
-                        idx += 1
-                    rtype, rclass, ttl, rdlen = struct.unpack('!HHIH', resp[idx:idx+10])
-                    idx += 10
-                    rdata = resp[idx:idx+rdlen]
-                    idx += rdlen
-                    if rtype == 1 and rdlen == 4:
-                        ips.append(socket.inet_ntoa(rdata))
-                return ips
+
+    query_id = 0x1234
+    header = struct.pack("!HHHHHH", query_id, 0x0100, 1, 0, 0, 0)
+    try:
+        labels = hostname.rstrip(".").split(".")
+        if not hostname or any(not label or len(label.encode("idna")) > 63 for label in labels):
+            return []
+        qname = b"".join(bytes([len(label.encode("idna"))]) + label.encode("idna") for label in labels) + b"\x00"
+        question = qname + struct.pack("!HH", 1, 1)
+        message = header + question
+        framed_message = struct.pack("!H", len(message)) + message
     except Exception:
         return []
+
+    for dns_ip in addresses:
+        raw_sock = None
+        try:
+            # Bypass both plugins' create_connection monkey-patches for the
+            # resolver bootstrap connection. This is a direct DoT request.
+            raw_sock = _create_direct_connection((dns_ip, 853), timeout=3.5)
+            with ctx.wrap_socket(raw_sock, server_hostname=server_name) as tls_sock:
+                raw_sock = None  # wrap_socket owns and closes the raw socket
+                tls_sock.sendall(framed_message)
+                length_prefix = _recv_all(tls_sock, 2)
+                if len(length_prefix) != 2:
+                    continue
+                response_length = struct.unpack("!H", length_prefix)[0]
+                response = _recv_all(tls_sock, response_length)
+
+            if len(response) < 12:
+                continue
+            response_id, response_flags, qdcount, ancount, _, _ = struct.unpack("!HHHHHH", response[:12])
+            if response_id != query_id or not (response_flags & 0x8000) or (response_flags & 0x000F):
+                continue
+
+            index = 12
+            for _ in range(qdcount):
+                while index < len(response) and response[index] != 0:
+                    if response[index] & 0xC0 == 0xC0:
+                        index += 2
+                        break
+                    index += 1 + response[index]
+                else:
+                    index += 1
+                index += 4
+
+            ips = []
+            for _ in range(ancount):
+                if index >= len(response):
+                    break
+                if response[index] & 0xC0 == 0xC0:
+                    index += 2
+                else:
+                    while index < len(response) and response[index] != 0:
+                        index += 1 + response[index]
+                    index += 1
+                if index + 10 > len(response):
+                    break
+                rtype, rclass, _, rdlength = struct.unpack("!HHIH", response[index:index + 10])
+                index += 10
+                rdata = response[index:index + rdlength]
+                index += rdlength
+                if rtype == 1 and rclass == 1 and rdlength == 4:
+                    ips.append(socket.inet_ntoa(rdata))
+            if ips:
+                return ips
+        except Exception:
+            pass
+        finally:
+            if raw_sock is not None:
+                try:
+                    raw_sock.close()
+                except Exception:
+                    pass
+    return []
 
 _dns_lock = threading.local()
 
@@ -453,6 +526,9 @@ def _resolve_dns_doh(hostname):
 
 def resolve_dns_custom(hostname, dns_server):
     dns_server_str = str(dns_server or "").strip()
+    if dns_server_str.lower() == "dns.dns-ai.ru":
+        # DNS-AI only serves encrypted DNS; its UDP/53 endpoint is closed.
+        return _resolve_dns_dot(hostname, dns_server_str)
     if any(c.isalpha() for c in dns_server_str):
         ips = _resolve_dns_dot(hostname, dns_server_str)
         if ips:
@@ -470,11 +546,19 @@ def dns_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     if getattr(_dns_lock, "active", False):
         return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
-    if plugin_instance and plugin_instance.get_setting("connection_mode", 0) == 3:
+    if plugin_instance and plugin_instance.get_setting("connection_mode", DEFAULT_CONNECTION_MODE) == 3:
         host_str = str(host or "").strip()
-        bypass_hosts = ("localhost", "127.0.0.1", "::1", "dns.google", "cloudflare-dns.com", "one.one.one.one", "77.220.180.180", "xbox-dns.ru", "dns.malw.link")
-        if host_str and not host_str.replace(".", "").isdigit() and host_str.lower() not in bypass_hosts:
-            dns_server = plugin_instance.get_setting("dns_server", "").strip()
+        bypass_hosts = ("localhost", "127.0.0.1", "::1", "dns.google", "cloudflare-dns.com", "one.one.one.one", "77.220.180.180", "xbox-dns.ru", "dns.malw.link", "dns.dns-ai.ru")
+        is_ip_literal = False
+        for address_family in (socket.AF_INET, socket.AF_INET6):
+            try:
+                socket.inet_pton(address_family, host_str)
+                is_ip_literal = True
+                break
+            except (OSError, TypeError):
+                pass
+        if host_str and not is_ip_literal and host_str.lower() not in bypass_hosts:
+            dns_server = str(plugin_instance.get_setting("dns_server", DEFAULT_DNS_SERVER) or DEFAULT_DNS_SERVER).strip()
             _dns_lock.active = True
             try:
                 ips = resolve_dns_custom(host_str, dns_server)
@@ -488,24 +572,11 @@ def dns_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
 def apply_socks5_patch():
-    global _patched, _orig_create_connection, _dns_patched
+    global _patched, _dns_patched
     if not _dns_patched:
         socket.getaddrinfo = dns_getaddrinfo
         _dns_patched = True
     if not _patched:
-        try:
-            import urllib3.util.connection
-            _orig_create_connection = urllib3.util.connection.create_connection
-        except Exception:
-            try:
-                import urllib3.connection
-                _orig_create_connection = urllib3.connection.create_connection
-            except Exception:
-                pass
-                
-        if not _orig_create_connection:
-            _orig_create_connection = socket.create_connection
-
         socket.create_connection = socks5_create_connection
 
         packages_to_patch = ["urllib3.util.connection", "urllib3.connection", "urllib3.util"]
@@ -634,7 +705,7 @@ class LocalizationManager:  # Credits: Command List plugin by @mihailkotovski
             "bulletin_open_settings": "Open settings",
             "bulletin_view_error": "View error",
             "bulletin_copied_to_clipboard": "Copied to clipboard",
-            "bulletin_dns_recommendation": "I recommend setting up a DNS server (e.g. xbox-dns.ru or dns.malw.link)",
+            "bulletin_dns_recommendation": "I recommend using dns.dns-ai.ru as the DNS server.",
             "header_connection": "Connection Mode",
             "settings_connection_mode": "Connection mode",
             "connection_mode_items": ["Disabled", "GreenPass Proxy", "Manual SOCKS5", "Custom DNS"],
@@ -642,7 +713,7 @@ class LocalizationManager:  # Credits: Command List plugin by @mihailkotovski
             "proxy_port": "Port",
             "proxy_user": "Username (optional)",
             "proxy_pass": "Password (optional)",
-            "dns_server": "DNS server IP",
+            "dns_server": "DNS server (hostname or IP)",
             "settings_model_override": "Override model name",
             "settings_model_override_subtext": "Manually specify the model name to use instead of the default.",
         },
@@ -663,7 +734,7 @@ class LocalizationManager:  # Credits: Command List plugin by @mihailkotovski
             "settings_thinking_mode": "Режим мышления",
             "settings_thinking_mode_subtext": "Модель думает некоторое время, чтобы улучшить качество расшифровки.",
             "warning_mistral_phone": "Для получения токена Mistral нужен номер телефона. Подойдет и российский.",
-            "warning_gemini_vpn": "Gemini не работает в России. Рекомендую поставить DNS (например, xbox-dns.ru или dns.malw.link)",
+            "warning_gemini_vpn": "Gemini не работает в России. Рекомендую DNS dns.dns-ai.ru.",
             "warning_deepgram_vpn": "Если возникнут проблемы с регистрацией, попробуйте включить VPN.",
             "token_token": "Токен",
             "token_get_token": "Получить токен",
@@ -729,7 +800,7 @@ class LocalizationManager:  # Credits: Command List plugin by @mihailkotovski
             "bulletin_open_settings": "Открыть настройки",
             "bulletin_view_error": "Открыть",
             "bulletin_copied_to_clipboard": "Скопировано в буфер обмена",
-            "bulletin_dns_recommendation": "Рекомендую поставить DNS (например, xbox-dns.ru или dns.malw.link)",
+            "bulletin_dns_recommendation": "Рекомендую DNS-сервер dns.dns-ai.ru.",
             "header_connection": "Режим подключения",
             "settings_connection_mode": "Режим подключения",
             "connection_mode_items": ["Отключено", "Прокси GreenPass", "Вручную SOCKS5", "Кастомный DNS"],
@@ -737,7 +808,7 @@ class LocalizationManager:  # Credits: Command List plugin by @mihailkotovski
             "proxy_port": "Порт",
             "proxy_user": "Имя пользователя (опционально)",
             "proxy_pass": "Пароль (опционально)",
-            "dns_server": "IP-адрес DNS-сервера",
+            "dns_server": "DNS-сервер (домен или IP)",
             "settings_model_override": "Переопределить модель",
             "settings_model_override_subtext": "Вручную укажите имя модели для использования вместо стандартной.",
         },
@@ -755,9 +826,33 @@ localization = LocalizationManager()
 
 
 class TranscribePlugin(BasePlugin):
+    def _ensure_default_connection_settings(self):
+        migration_key = "dns_ai_default_migrated"
+        try:
+            if self.get_setting(migration_key, False):
+                return
+
+            # Mode 0 was the old implicit default. Switch that default to DNS
+            # once, but retain explicit GreenPass and manual SOCKS selections.
+            try:
+                current_mode = int(self.get_setting("connection_mode", DEFAULT_CONNECTION_MODE))
+            except Exception:
+                current_mode = DEFAULT_CONNECTION_MODE
+            if current_mode == 0:
+                self.set_setting("connection_mode", DEFAULT_CONNECTION_MODE, reload_settings=False)
+
+            current_dns = str(self.get_setting("dns_server", "") or "").strip()
+            if not current_dns or current_dns == "77.220.180.180":
+                self.set_setting("dns_server", DEFAULT_DNS_SERVER, reload_settings=False)
+
+            self.set_setting(migration_key, True, reload_settings=False)
+        except Exception as e:
+            log(f"[TRANSCRIBER] Error applying DNS defaults: {e}")
+
     def on_plugin_load(self):
         global plugin_instance
         plugin_instance = self
+        self._ensure_default_connection_settings()
         apply_socks5_patch()
         TranscribeButton = find_class("org.telegram.ui.Components.TranscribeButton")
         ChatMessageCell = find_class("org.telegram.ui.Cells.ChatMessageCell")
@@ -1030,10 +1125,10 @@ class TranscribePlugin(BasePlugin):
 
             # Subtitle
             sub = TextView(context)
-            conn_mode = self.get_setting("connection_mode", 0)
+            conn_mode = self.get_setting("connection_mode", DEFAULT_CONNECTION_MODE)
             conn_names = ["Прямое подключение", "Прокси GreenPass", "SOCKS5 прокси", "Кастомный DNS"]
             conn_name = conn_names[conn_mode] if 0 <= conn_mode < len(conn_names) else ""
-            sub.setText(f"Версия 2.4.0f • {conn_name}")
+            sub.setText(f"Версия {__version__} • {conn_name}")
             sub.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13)
             sub.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))
             sub.setPadding(0, dp(8), 0, 0)
@@ -1051,7 +1146,7 @@ class TranscribePlugin(BasePlugin):
             settings = [hero] if hero is not None else [Header(text=localization.get_string("header_settings"))]
 
             model = self.get_setting("model", 0)
-            conn_mode = self.get_setting("connection_mode", 0)
+            conn_mode = self.get_setting("connection_mode", DEFAULT_CONNECTION_MODE)
 
             # 1. Сеть и подключение
             if Divider is not None:
@@ -1061,7 +1156,7 @@ class TranscribePlugin(BasePlugin):
                 Selector(
                     key="connection_mode",
                     text=localization.get_string("settings_connection_mode"),
-                    default=0,
+                    default=DEFAULT_CONNECTION_MODE,
                     items=localization.get_string("connection_mode_items"),
                     icon="msg2_proxy_on" if conn_mode == 1 else "menu_network",
                 )
@@ -1074,10 +1169,11 @@ class TranscribePlugin(BasePlugin):
                     Input(key="proxy_user", text=localization.get_string("proxy_user"), default="", icon="menu_unlock"),
                     Input(key="proxy_pass", text=localization.get_string("proxy_pass"), default="", icon="menu_privacy"),
                 ])
-            elif conn_mode == 3:
-                settings.append(
-                    Input(key="dns_server", text=localization.get_string("dns_server"), default="77.220.180.180", icon="msg_replace")
-                )
+            # Keep the DNS field visible while the selector changes. The
+            # settings screen is not consistently rebuilt after a Selector tap.
+            settings.append(
+                Input(key="dns_server", text=localization.get_string("dns_server"), default=DEFAULT_DNS_SERVER, icon="msg_replace")
+            )
 
             # 2. Модель и токен
             if Divider is not None:
